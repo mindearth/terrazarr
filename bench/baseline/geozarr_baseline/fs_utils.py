@@ -1,0 +1,468 @@
+"""S3 utilities for GeoZarr conversion."""
+
+import json
+import os
+from collections.abc import Mapping
+from typing import Any
+from urllib.parse import urlparse
+
+import s3fs
+import zarr
+from fsspec.implementations.local import LocalFileSystem
+from s3fs import S3FileSystem
+
+from geozarr_baseline.store import get_storage_options
+from geozarr_baseline.store import get_zarr_store
+from geozarr_baseline.types import S3Credentials, S3FsOptions
+
+
+def normalize_s3_path(s3_path: str) -> str:
+    """
+    Normalize an S3 path by removing double slashes and ensuring proper format.
+
+    This is important for OVH S3 which is sensitive to double slashes.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path to normalize
+
+    Returns
+    -------
+    str
+        Normalized S3 path
+    """
+    if not s3_path.startswith("s3://"):
+        return s3_path
+
+    # Split into scheme and path parts
+    scheme = "s3://"
+    path_part = s3_path[5:]  # Remove "s3://"
+
+    # Remove double slashes from the path part
+    # But preserve the bucket/key structure
+    parts = path_part.split("/")
+    # Filter out empty parts (which come from double slashes)
+    normalized_parts = [part for part in parts if part]
+
+    # Reconstruct the path
+    if normalized_parts:
+        normalized_path = scheme + "/".join(normalized_parts)
+    else:
+        normalized_path = scheme
+
+    return normalized_path
+
+
+def is_s3_path(path: str) -> bool:
+    """
+    Check if a path is an S3 URL.
+
+    Parameters
+    ----------
+    path : str
+        Path to check
+
+    Returns
+    -------
+    bool
+        True if the path is an S3 URL
+    """
+    return path.startswith("s3://")
+
+
+def parse_s3_path(s3_path: str) -> tuple[str, str]:
+    """
+    Parse an S3 path into bucket and key components.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path in format s3://bucket/key
+
+    Returns
+    -------
+    tuple[str, str]
+        Tuple of (bucket, key)
+    """
+    parsed = urlparse(s3_path)
+    if parsed.scheme != "s3":
+        raise ValueError(f"Invalid S3 path: {s3_path}")
+
+    bucket = parsed.netloc
+    key = parsed.path.lstrip("/")
+
+    return bucket, key
+
+
+def normalize_path(path: str) -> str:
+    """
+    Normalize any path type (local or remote URL).
+
+    This function handles path normalization for all filesystem types,
+    ensuring proper path formatting and removing issues like double slashes.
+
+    Parameters
+    ----------
+    path : str
+        Path to normalize
+
+    Returns
+    -------
+    str
+        Normalized path
+    """
+    if is_s3_path(path):
+        return normalize_s3_path(path)
+    else:
+        # For local paths, normalize by removing double slashes and cleaning up
+        import os.path
+
+        return os.path.normpath(path)
+
+
+def write_s3_json_metadata(
+    s3_path: str, metadata: Mapping[str, Any], **s3_kwargs: Any
+) -> None:
+    """
+    Write JSON metadata directly to S3.
+
+    This is used for writing zarr.json files and other metadata that need
+    to be written directly to S3 without going through the Zarr store.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path for the JSON file
+    metadata : dict
+        Metadata dictionary to write as JSON
+    **s3_kwargs
+        Additional keyword arguments for s3fs.S3FileSystem
+    """
+    # Set up default S3 configuration
+    default_s3_kwargs: S3FsOptions = {
+        "anon": False,
+        "use_ssl": True,
+        "asynchronous": False,  # Force synchronous mode
+        "client_kwargs": {
+            "region_name": os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        },
+    }
+
+    # Add custom endpoint support (e.g., for OVH Cloud)
+    if "AWS_ENDPOINT_URL" in os.environ:
+        default_s3_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+        client_kwargs = default_s3_kwargs.get("client_kwargs")
+        if isinstance(client_kwargs, dict):
+            client_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+
+    s3_config = {**default_s3_kwargs, **s3_kwargs}
+    fs = s3fs.S3FileSystem(**s3_config)
+
+    # Write JSON content
+    json_content = json.dumps(metadata, indent=2)
+    with fs.open(s3_path, "w") as f:
+        f.write(json_content)
+
+
+def read_s3_json_metadata(s3_path: str, **s3_kwargs: Any) -> dict[str, Any]:
+    """
+    Read JSON metadata from S3.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path for the JSON file
+    **s3_kwargs
+        Additional keyword arguments for s3fs.S3FileSystem
+
+    Returns
+    -------
+    dict
+        Parsed JSON metadata
+    """
+    # Set up default S3 configuration
+    default_s3_kwargs: S3FsOptions = {
+        "anon": False,
+        "use_ssl": True,
+        "asynchronous": False,  # Force synchronous mode
+        "client_kwargs": {
+            "region_name": os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        },
+    }
+
+    # Add custom endpoint support (e.g., for OVH Cloud)
+    if "AWS_ENDPOINT_URL" in os.environ:
+        default_s3_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+        client_kwargs = default_s3_kwargs.get("client_kwargs")
+        if isinstance(client_kwargs, dict):
+            client_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+
+    s3_config = {**default_s3_kwargs, **s3_kwargs}
+    fs = s3fs.S3FileSystem(**s3_config)
+
+    with fs.open(s3_path, "r") as f:
+        content = f.read()
+
+    result: dict[str, Any] = json.loads(content)
+    return result
+
+
+def s3_path_exists(s3_path: str, **s3_kwargs: Any) -> bool:
+    """
+    Check if an S3 path exists.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path to check
+    **s3_kwargs
+        Additional keyword arguments for s3fs.S3FileSystem
+
+    Returns
+    -------
+    bool
+        True if the path exists
+    """
+    default_s3_kwargs: S3FsOptions = {
+        "anon": False,
+        "use_ssl": True,
+        "asynchronous": False,  # Force synchronous mode
+        "client_kwargs": {
+            "region_name": os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        },
+    }
+
+    # Add custom endpoint support (e.g., for OVH Cloud)
+    if "AWS_ENDPOINT_URL" in os.environ:
+        default_s3_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+        client_kwargs = default_s3_kwargs.get("client_kwargs")
+        if isinstance(client_kwargs, dict):
+            client_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+
+    s3_config = {**default_s3_kwargs, **s3_kwargs}
+    fs = s3fs.S3FileSystem(**s3_config)
+
+    result: bool = fs.exists(s3_path)
+    return result
+
+
+def open_s3_zarr_group(s3_path: str, mode: str = "r", **s3_kwargs: Any) -> zarr.Group:
+    """
+    Open a Zarr group from S3 using storage_options.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path to the Zarr group
+    mode : str, default "r"
+        Access mode ("r", "r+", "w", "a")
+    **s3_kwargs
+        Additional keyword arguments for s3fs.S3FileSystem
+
+    Returns
+    -------
+    zarr.Group
+        Zarr group
+    """
+    storage_options = get_storage_options(s3_path).get("storage_options", {})
+    return zarr.open_group(
+        get_zarr_store(s3_path),
+        mode=mode,
+        zarr_format=3,
+        #   storage_options=storage_options
+    )
+
+
+def get_s3_credentials_info() -> S3Credentials:
+    """
+    Get information about available S3 credentials.
+
+    Returns
+    -------
+    dict
+        Dictionary with credential information
+    """
+    return {
+        "aws_access_key_id": os.environ.get("AWS_ACCESS_KEY_ID"),
+        "aws_secret_access_key": (
+            "***" if os.environ.get("AWS_SECRET_ACCESS_KEY") else None
+        ),
+        "aws_session_token": "***" if os.environ.get("AWS_SESSION_TOKEN") else None,
+        "aws_default_region": os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        "aws_profile": os.environ.get("AWS_PROFILE"),
+        "AWS_ENDPOINT_URL": os.environ.get("AWS_ENDPOINT_URL"),
+    }
+
+
+def validate_s3_access(s3_path: str, **s3_kwargs: Any) -> tuple[bool, str | None]:
+    """
+    Validate that we can access the S3 path.
+
+    Parameters
+    ----------
+    s3_path : str
+        S3 path to validate
+    **s3_kwargs
+        Additional keyword arguments for s3fs.S3FileSystem
+
+    Returns
+    -------
+    tuple[bool, str | None]
+        Tuple of (success, error_message)
+    """
+    try:
+        bucket, _ = parse_s3_path(s3_path)
+
+        default_s3_kwargs: S3FsOptions = {
+            "anon": False,
+            "use_ssl": True,
+            "asynchronous": False,  # Force synchronous mode
+            "client_kwargs": {
+                "region_name": os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            },
+        }
+
+        # Add custom endpoint support (e.g., for OVH Cloud)
+        if "AWS_ENDPOINT_URL" in os.environ:
+            default_s3_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+            client_kwargs = default_s3_kwargs.get("client_kwargs")
+            if isinstance(client_kwargs, dict):
+                client_kwargs["endpoint_url"] = os.environ["AWS_ENDPOINT_URL"]
+
+        s3_config = {**default_s3_kwargs, **s3_kwargs}
+        fs = s3fs.S3FileSystem(**s3_config)
+
+        # Try to list the bucket to check access
+        fs.ls(f"s3://{bucket}", detail=False)
+
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
+
+
+def get_filesystem(path: str, **kwargs: Any) -> LocalFileSystem | S3FileSystem:
+    """
+    Get the appropriate fsspec filesystem for any path type.
+
+    Parameters
+    ----------
+    path : str
+        Path or URL (local path, s3://, etc.)
+    **kwargs
+        Additional keyword arguments for the filesystem
+
+    Returns
+    -------
+    fsspec.AbstractFileSystem
+        Filesystem instance
+    """
+
+    if is_s3_path(path):
+        # Get S3 storage options and use them for fsspec
+        storage_options = get_storage_options(path, **kwargs)
+        return S3FileSystem(**storage_options.get("storage_options", {}))  # type: ignore
+    else:
+        # For local paths, use the local filesystem
+        return LocalFileSystem(**kwargs)
+
+
+def write_json_metadata(path: str, metadata: dict[str, Any], **kwargs: Any) -> None:
+    """
+    Write JSON metadata to any path type using fsspec.
+
+    Parameters
+    ----------
+    path : str
+        Path where to write the JSON file (local path or URL)
+    metadata : dict
+        Metadata dictionary to write as JSON
+    **kwargs
+        Additional keyword arguments for the filesystem
+    """
+    fs = get_filesystem(path, **kwargs)
+
+    # Ensure parent directory exists for local paths
+    if not is_s3_path(path):
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            fs.makedirs(parent_dir, exist_ok=True)
+
+    # Write JSON content using fsspec
+    json_content = json.dumps(metadata, indent=2)
+    with fs.open(path, "w") as f:
+        f.write(json_content)
+
+
+def read_json_metadata(path: str, **kwargs: Any) -> dict[str, Any]:
+    """
+    Read JSON metadata from any path type using fsspec.
+
+    Parameters
+    ----------
+    path : str
+        Path to the JSON file (local path or URL)
+    **kwargs
+        Additional keyword arguments for the filesystem
+
+    Returns
+    -------
+    dict
+        Parsed JSON metadata
+    """
+    fs = get_filesystem(path, **kwargs)
+
+    with fs.open(path, "r") as f:
+        content = f.read()
+
+    result: dict[str, Any] = json.loads(content)
+    return result
+
+
+def path_exists(path: str, **kwargs: Any) -> bool:
+    """
+    Check if a path exists using fsspec.
+
+    Parameters
+    ----------
+    path : str
+        Path to check (local path or URL)
+    **kwargs
+        Additional keyword arguments for the filesystem
+
+    Returns
+    -------
+    bool
+        True if the path exists
+    """
+    fs = get_filesystem(path, **kwargs)
+    result: bool = fs.exists(path)
+    return result
+
+
+def open_zarr_group(path: str, mode: str = "r", **kwargs: Any) -> zarr.Group:
+    """
+    Open a Zarr group from any path type using unified storage options.
+
+    Parameters
+    ----------
+    path : str
+        Path to the Zarr group (local path or URL)
+    mode : str, default "r"
+        Access mode ("r", "r+", "w", "a")
+    **kwargs
+        Additional keyword arguments for the storage backend
+
+    Returns
+    -------
+    zarr.Group
+        Zarr group
+    """
+    storage_options = get_storage_options(path, **kwargs).get("storage_options", {})
+    return zarr.open_group(
+        get_zarr_store(path),
+        mode=mode,
+        zarr_format=3,
+        # storage_options=storage_options
+    )

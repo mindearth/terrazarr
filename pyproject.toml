@@ -1,0 +1,36 @@
+[project]
+name = "geozarr-pyramid"
+version = "0.1.0"
+description = "GeoZarr multiscale pyramid writer (zarr v3, sharded), extracted from me-geotools zarr_pyramid_v3"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dask[array,distributed]>=2025.1",
+    "xarray>=2025.1",
+    "zarr>=3.0",
+    "numpy>=2.0",
+    "rioxarray>=0.17",
+    "rasterio>=1.4",
+    "pyproj>=3.6",
+    "affine>=2.4",
+    "fsspec>=2024.1",
+    "s3fs>=2024.1",
+    "obstore>=0.5",
+]
+
+[project.scripts]
+geozarr-pyramid = "geozarr_pyramid.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "psutil>=5.9"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
