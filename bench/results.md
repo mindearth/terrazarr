@@ -136,4 +136,6 @@ Checks on the written pyramid:
   so a 2×2 block with a single building pixel becomes 0 at level 1. That affects 0.7 % of the
   level-1 pixels in the checked block. A naive `nanmean` check will not match.
 - The extract, not the pyramid, is the memory hog: with 2048-row full-width strips (3.3 GB each) and
-  8 threads it peaked at 28 GB RSS and was restarted with 1024-row strips (`STRIP`).
+  8 threads it peaked at 28.4 GB RSS and was restarted with 1024-row strips (`STRIP`), which
+  peaked at 13.8 GB. Peak RSS ≈ 1.5 GB + threads × strip × width × itemsize (README, "Extract
+  memory").

@@ -67,3 +67,27 @@ uv pip install --python .venv-baseline/bin/python -e . --group dev "s3fs==2024.1
 ```
 
 The optimized module does not use s3fs and runs with current botocore. See `bench/results.md`.
+
+#### Extract memory: strip size vs peak RSS
+
+`tif_to_zarr.py` reads full-width row strips in parallel and every strip is one dask task, so
+`--threads` strips are decoded at once and each is held until its `--chunk` row is written:
+
+```
+peak RSS  ≈  1.5 GB  +  threads × strip × width × itemsize
+```
+
+The constant is the GDAL block cache (1 GB), the curl cache (0.5 GB) and the interpreter.
+Measured on `WSF3Dv3_Italy.tif` (width 200 599, float64, 8 threads):
+
+| `--strip` | strip size | predicted | measured peak RSS |
+|---:|---:|---:|---:|
+| 2048 | 3.29 GB | 27.8 GB | 28.4 GB |
+| 1024 | 1.64 GB | 14.6 GB | 13.8 GB |
+
+So halving the strip halves the peak, and the peak scales linearly with the raster width and the
+thread count. Pick `strip` so that `threads × strip × width × itemsize` is comfortably below the
+free memory; the strip count only changes the number of range requests, not the total bytes read.
+`bench/run_full_italy.sh` defaults to `STRIP=1024` for this reason. The pyramid step itself is
+bounded by `threads × chunk-size² × itemsize × 2` instead (see above), 3.5 GB for the same raster
+at chunk 4096.
