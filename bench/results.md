@@ -164,3 +164,34 @@ Checks on the written pyramid:
   8 threads it peaked at 28.4 GB RSS and was restarted with 1024-row strips (`STRIP`), which
   peaked at 13.8 GB. Peak RSS ≈ 1.5 GB + threads × strip × width × itemsize (README, "Extract
   memory").
+
+## Local disk vs MinIO: full WSF3Dv3 Italy
+
+Same input zarr copied to local NVMe (`rclone`, 30 s for 1.87 GB), both implementations reading
+and writing locally (`ROOT=bench/data/italy EXTRACT=0 TAG=_local`), run back to back with the
+same settings as the MinIO runs (chunk 4096, tile 256, mean, nodata 0, sharding, 8 threads).
+The input was in the page cache after the copy, so the local read side is effectively RAM.
+
+| wall time [s] | MinIO | local | local / MinIO |
+|---|---:|---:|---:|
+| baseline | 1343.97 | 1286.68 | 0.96× |
+| optimized | 1276.04 | 1425.04 | 1.12× |
+
+| peak RSS [MB] | MinIO | local |
+|---|---:|---:|
+| baseline | 3575.0 | 3532.2 |
+| optimized | 3450.1 | 3665.1 |
+
+Store traffic (chunk GETs/PUTs, tasks, objects) is identical to the MinIO runs for both.
+
+- Removing MinIO does not make either implementation faster, and the baseline/optimized ordering
+  flips between the two stores. The spread between the four runs (1276–1425 s) is run-to-run
+  noise on a shared machine, not store latency: on this raster and chunking, the pipeline is not
+  I/O-bound.
+- It is not fully CPU-bound either. Sampled during the level-0 copy, the process used 1.5–3 cores
+  of the 8 dask threads with the input in page cache, which points at serialised work
+  (codec / shard assembly under the GIL, per-shard index writes) rather than at the store. That is
+  where the next speed-up on a single machine would have to come from; the store optimisations pay
+  off when the input chunking does not tile the output shards (see the chunk-8192 window run).
+- Local outputs equal the MinIO outputs and each other at every level (levels 2–9 in full,
+  levels 0–1 on sampled 4096² blocks); the baseline again has no CRS on levels 1–9.
