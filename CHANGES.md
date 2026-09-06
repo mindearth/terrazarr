@@ -16,6 +16,11 @@ Baseline: `me-geotools` `src/me_geotools/zarr_pyramid_v3` at commit `bd5ef00` (k
 | 9 | Level L pixel size is exactly `2**L` native pixels, anchored top-left; level bbox follows the trimmed extent. Applied to level coordinates, `spatial_ref` GeoTransform, multiscales layout and tile matrix set. | D2 | `_level_pixel_size`, `create_overview_dataset_all_vars`, `create_native_crs_tile_matrix_set` |
 | 10 | Integer overviews round to nearest before the cast. | D3 | `create_overview_dataset_all_vars` |
 | 11 | `grid_mapping` is pinned into `attrs` before every write. An explicit `encoding=` passed to `to_zarr` replaces the variable encoding, where rioxarray keeps `grid_mapping`, so the baseline never stored it and a written level could not be decoded with a CRS (`ds.rio.crs` was `None`). Found on the MinIO test. | S3 test | `_pin_grid_mapping` |
+| 12 | Per-block numpy reduction (`utils.reduce_block`) mapped over dask blocks instead of an array-wide reshape and reduce. A block without a valid pixel is answered without a reduction (7 ms against 440 ms for a 4096² float64 block); with nodata 0 the masked copy of the block is skipped; the final cast (rounded for integers) is folded into the task. | profile | `utils.reduce_block`, `utils.downsample_2d_array` |
+| 13 | Level 1 is reduced from the level-0 blocks in the same compute as the level-0 write, so the largest level is read and decoded once instead of twice. A failed batch removes the partial level 1, which the pyramid then rebuilds from the store. `GEOZARR_PYRAMID_FUSE_LEVEL_1=0` disables it. | profile | `write_geozarr_group`, `write_dataset_band_by_band_with_validation` |
+| 14 | Overview levels with at least 16 output shards are built by one task per output shard that reads its four parent shards from the store one at a time: no 2×2 block merge, task memory is one parent shard plus the output whatever the level, and a parent shard that holds no valid pixel costs one GET and a scan. Smaller levels keep one task per parent shard for parallelism (`GEOZARR_PYRAMID_MIN_BLOCKS_FROM_STORE`). | profile | `_overview_arrays_from_store`, `_read_reduce_block` |
+| 15 | Dask worker processes by default (`--workers min(8, cpus)`, `--threads-per-worker 1`). Zarr assembles chunks on one asyncio loop per process, so threads queue on it: 8 single-threaded processes halve the wall time of one 8-thread process at identical output. | profile | `cli.py` |
+| 16 | `--compressor {zstd,lz4,lz4hc,blosclz,zlib,none}` and `--clevel` for every level (`create_geozarr_dataset(compressor=...)`, `make_compressor`). | profile | `cli.py`, `make_compressor` |
 | – | Multiscale failures are re-raised; `_create_encoding` call fixed (was a `TypeError` for non-GeoZarr groups); `--nodata` accepts floats; numpy fallback uses `chunks="auto"`. | D4, L4 | |
 
 ## Output differences to expect
@@ -25,6 +30,9 @@ Baseline: `me-geotools` `src/me_geotools/zarr_pyramid_v3` at commit `bd5ef00` (k
   smaller pixel size and extent than the baseline (the baseline stretched the full native
   bounds over the trimmed pixels). Level 0 and shapes that are powers of two are identical.
 - Group attributes gain a per-level `spatial:bbox` in `multiscales.layout`.
+- `nearest` picks the pixel at the centre of each `2**L` block, consistent with the level
+  transform. The baseline stretched the native extent over the trimmed shape, so for sizes that
+  are not multiples of `2**L` its sampled rows and columns drift by up to one pixel.
 
 ## Behaviour kept
 

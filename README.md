@@ -24,13 +24,20 @@ Credentials for `s3://` paths come from the environment (`AWS_ACCESS_KEY_ID`,
 ```bash
 geozarr-pyramid --input in.zarr --output out.zarr \
   --chunk-size 4096 --tile-width 256 --sharding --method mean --nodata 0 \
-  --workers 4 --threads-per-worker 4 --memory-limit 12GB
+  --workers 8 --threads-per-worker 1 --memory-limit 4GB --compressor zstd --clevel 3
 ```
 
 `--tile-width` is the zarr chunk on y/x (the tile served to clients). `--chunk-size` is the
 shard on y/x with `--sharding`, and the dask block on y/x in every case; it must be a multiple of
 the tile width. Peak memory per task is about one `chunk-size²` block times a small factor
 (see `CHANGES.md`, H1), times `--threads-per-worker` per worker.
+
+Prefer several single-threaded worker processes over one multi-threaded worker: zarr assembles
+chunks on one asyncio event loop per process, so dask threads queue on it and one 8-thread
+process uses under three cores (`bench/results.md`, "Profile"). Level 0 is copied and level 1
+reduced from the same blocks in one pass; every further level is built one task per output
+shard, reading its parent shards from the store one at a time, so task memory does not grow with
+the level. Blocks without a valid pixel are skipped, which makes sparse rasters cheap.
 
 ## Test and benchmark
 
@@ -39,6 +46,7 @@ Local, synthetic inputs:
 ```bash
 .venv/bin/python -m pytest -q
 .venv/bin/python bench/compare.py              # writes bench/out/results.md
+TAG=_v2 bash bench/run_suite.sh                # every benchmark of bench/results.md (about an hour)
 .venv/bin/python bench/compare.py --only s1    # one scenario
 ```
 
