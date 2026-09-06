@@ -195,3 +195,34 @@ Store traffic (chunk GETs/PUTs, tasks, objects) is identical to the MinIO runs f
   off when the input chunking does not tile the output shards (see the chunk-8192 window run).
 - Local outputs equal the MinIO outputs and each other at every level (levels 2–9 in full,
   levels 0–1 on sampled 4096² blocks); the baseline again has no CRS on levels 1–9.
+
+## Profile of the optimized pipeline (local 32768² Italy window)
+
+`py-spy record` over `run_one.py --impl optimized`, chunk 4096, 8 threads, input and output on
+local NVMe (`bench/data/italy/input/WSF3Dv3_Italy_win32k.zarr`). Wall 47 s at 279 % CPU of the
+800 % available; level-0 copy ≈ 18 s, level 1 ≈ 20 s, levels 2–7 ≈ 7.5 s.
+
+| share of samples | where | what |
+|---:|---|---|
+| 20 % | `numpy sum` in `utils.downsample` | `valid.sum` + `where(valid, blocks, 0).sum` over `axis=(1, 3)` |
+| 14 % | zarr `read_batch` / `write_batch` `__setitem__`, `all_equal`, `np.full` | per-chunk copies into the output array, on zarr's single event-loop thread |
+| 10 % | `_decode_sync` → `as_numpy_array_wrapper` | blosc decode plus a copy to numpy |
+| 8 % | `_encode_sync` | blosc encode |
+| 5 % | dask `_concatenate2` | merging 2×2 downsampled blocks into one shard-sized block |
+| 12 % | `ThreadPoolExecutor._worker` | dask threads idle, waiting for zarr |
+
+The GIL is held in only 12 % of samples, so the run is not GIL-bound; the dask threads block on
+`zarr` `sync()` while one event-loop thread does all the chunk assembly. Splitting the work over
+processes removes that serialisation (`run_one.py --workers`):
+
+| dask layout | wall [s] | CPU | peak RSS |
+|---|---:|---:|---:|
+| 1 process × 8 threads | 48.2 | 277 % | 2.6 GB |
+| 4 processes × 2 threads | 29.0 | 808 % | |
+| 8 processes × 1 thread | 23.4 | 1051 % | 4.7 GB (sum over the tree) |
+| 4 processes × 4 threads | 30.1 | 872 % | |
+
+Outputs are identical to the threaded run at every level. The downsample kernel itself gains
+little from re-formulation (a nodata-0 special case without the `where` copy is 14 % faster);
+the large kernel win is skipping all-nodata blocks (`any()` on a 4096² block costs 7 ms against
+440 ms for the reduction), which applies to ~40 % of the input chunks of this raster.

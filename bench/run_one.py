@@ -93,6 +93,7 @@ def main() -> None:
     p.add_argument("--sharding", action="store_true")
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--workers", type=int, default=1, help="dask worker processes (>1: threads are split across them; store counters then cover the main process only)")
     args = p.parse_args()
 
     if args.impl == "baseline":
@@ -109,7 +110,10 @@ def main() -> None:
     counters: Counter = Counter()
     instrument_stores(counters)
 
-    client = Client(processes=False, n_workers=1, threads_per_worker=args.threads, dashboard_address=":0", silence_logs=50)
+    if args.workers > 1:
+        client = Client(processes=True, n_workers=args.workers, threads_per_worker=max(1, args.threads // args.workers), dashboard_address=":0", silence_logs=50)
+    else:
+        client = Client(processes=False, n_workers=1, threads_per_worker=args.threads, dashboard_address=":0", silence_logs=50)
 
     if args.quiet:
         sys.stdout = open(os.devnull, "w")
