@@ -110,3 +110,30 @@ The baseline runs in `.venv-baseline` (botocore < 1.36, see README).
   4.3 GB of input blocks in flight, and the observed 8.4 GB is that times a factor of two. The
   baseline uses less memory at 8192 only because it reads small pieces, which is what costs it the
   22 240 GETs. Choose `--chunk-size`/`--threads` so that `threads × chunk² × itemsize × 2` fits.
+
+## Against MinIO: full WSF3Dv3 Italy
+
+`bench/run_full_italy.sh`: the whole `WSF3Dv3_Italy.tif` (178335×200599 float64, 1.3 % non-zero)
+extracted to a 2048-chunked zarr on MinIO, then the optimized pyramid with
+`--chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads 8`.
+Same 24-core / 43 GB machine, MinIO over the local network.
+
+| step | wall time | peak RSS [MB] | objects | size on MinIO [GB] |
+|---|---:|---:|---:|---:|
+| extract (`tif_to_zarr.py`, 175 strips of 1024 rows) | 259 s | ~14 000 | 5239 | 1.87 |
+| pyramid, 10 levels (optimized) | 1276 s (21 min) | 3450 | 2178 | 2.69 |
+
+Pyramid store traffic: 27 771 chunk GETs, 2 127 chunk PUTs, 355 metadata GETs, 26 956 dask tasks.
+
+Checks on the written pyramid:
+
+- 10 levels, 178335×200599 down to 348×391, pixel size exactly `2**L` × 0.0000898°, CRS decodable
+  at every level, shards 4096² with 256² inner chunks (smaller shards on the last four levels where
+  the level itself is smaller).
+- Level 0 equals the input on a 4096² block in the centre of Italy.
+- Level 1 equals the 2×2 mean of level 0 on that block with the pyramid's nodata rule: a block
+  whose valid fraction is below 30 % (`utils.VALID_FRACTION`, same rule as the baseline) is nodata,
+  so a 2×2 block with a single building pixel becomes 0 at level 1. That affects 0.7 % of the
+  level-1 pixels in the checked block. A naive `nanmean` check will not match.
+- The extract, not the pyramid, is the memory hog: with 2048-row full-width strips (3.3 GB each) and
+  8 threads it peaked at 28 GB RSS and was restarted with 1024-row strips (`STRIP`).
