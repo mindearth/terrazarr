@@ -8,7 +8,7 @@ import os
 
 import xarray as xr
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset
+from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
 from geozarr_pyramid.store import get_zarr_store, set_spatial_info
 
 log = logging.getLogger(__name__)
@@ -72,8 +72,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sharding", action="store_true", default=False, help="Enable zarr sharding")
     parser.add_argument("--nodata", type=float, default=None, help="Nodata value (NaN is always nodata)")
     parser.add_argument("--s3-profile", default=None, help="Kept for compatibility; credentials come from the environment")
-    parser.add_argument("--workers", type=int, default=4, help="Number of Dask workers")
-    parser.add_argument("--threads-per-worker", type=int, default=None, help="Threads per Dask worker")
+    parser.add_argument(
+        "--compressor", default="zstd", choices=["zstd", "lz4", "lz4hc", "blosclz", "zlib", "none"],
+        help="Blosc codec for the data variables of every level (byte shuffle), or none",
+    )
+    parser.add_argument("--clevel", type=int, default=3, help="Blosc compression level")
+    parser.add_argument(
+        "--workers", type=int, default=min(8, os.cpu_count() or 4),
+        help="Dask worker processes. Zarr serialises chunk assembly on one event loop per "
+        "process, so several single-threaded workers beat one multi-threaded worker",
+    )
+    parser.add_argument(
+        "--threads-per-worker", type=int, default=1,
+        help="Threads per Dask worker; task memory is workers × threads × chunk-size² × itemsize × 2",
+    )
     parser.add_argument("--memory-limit", default="auto", help='Memory limit per worker, e.g. "12GB"')
     return parser
 
@@ -109,6 +121,7 @@ def main(argv: list[str] | None = None) -> None:
             method=args.method,
             nodata_value=args.nodata,
             s3_profile=args.s3_profile,
+            compressor=make_compressor(args.compressor, args.clevel),
         )
     finally:
         client.close()

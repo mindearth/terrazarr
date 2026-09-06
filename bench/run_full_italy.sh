@@ -5,7 +5,8 @@
 #   THREADS, STRIP            dask threads; rows per extract strip
 #   ROOT                      store root for input and output (default MinIO; a local dir for a
 #                             latency-free run, e.g. ROOT=bench/data/italy EXTRACT=0 TAG=_local)
-#   TAG                       suffix for the bench/out result files
+#   TAG                       suffix for the output store and the bench/out result files
+#   WORKERS                   dask worker processes (THREADS are split across them)
 # Extract memory: peak RSS ~ 1.5 GB + THREADS x STRIP x width x itemsize (see README).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -13,12 +14,13 @@ source bench/s3env.sh
 IMPL=${IMPL:-optimized}
 EXTRACT=${EXTRACT:-1}
 THREADS=${THREADS:-8}
+WORKERS=${WORKERS:-1}
 STRIP=${STRIP:-1024}
 SRC=s3://wsf-artifacts/3d/local/italy/20240101/original/WSF3Dv3_Italy.tif
 ROOT=${ROOT:-s3://test/geozzar-pyramid}
 TAG=${TAG:-}
 IN=$ROOT/input/WSF3Dv3_Italy_full.zarr
-OUT=$ROOT/italy_full_${IMPL}.zarr
+OUT=$ROOT/italy_full_${IMPL}${TAG}.zarr
 PY=.venv/bin/python
 [ "$IMPL" = baseline ] && PY=.venv-baseline/bin/python
 if [ "$EXTRACT" = 1 ]; then
@@ -27,6 +29,6 @@ if [ "$EXTRACT" = 1 ]; then
 fi
 echo "== pyramid $IMPL $(date +%T)"
 "$PY" bench/run_one.py --impl "$IMPL" --input "$IN" --output "$OUT" \
-  --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads "$THREADS" --quiet \
+  --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads "$THREADS" --workers "$WORKERS" --quiet \
   2> "bench/out/italy_full_${IMPL}${TAG}.stderr" | tail -1 | tee "bench/out/italy_full_${IMPL}${TAG}.json"
 echo "== done $(date +%T)"

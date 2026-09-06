@@ -21,7 +21,9 @@ Scaling design (see CHANGES.md):
 """
 
 import dataclasses
+import os
 import time
+import uuid
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from typing import Any
 
@@ -76,6 +78,13 @@ GEOZARR_CONVENTIONS: list[dict[str, str]] = [
 ]
 
 SPATIAL_DIMS = ("y", "x")
+
+FUSE_LEVEL_1 = os.environ.get("GEOZARR_PYRAMID_FUSE_LEVEL_1", "1") != "0"
+"""Reduce level 1 from the level-0 blocks in the same compute as the level-0 write."""
+
+MIN_BLOCKS_FROM_STORE = int(os.environ.get("GEOZARR_PYRAMID_MIN_BLOCKS_FROM_STORE", "16"))
+"""Below this many output shards, an overview is reduced from the in-memory parent blocks
+(one task per parent shard) rather than one task per output shard, to keep parallelism."""
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +160,133 @@ def _pin_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+DEFAULT_COMPRESSOR = object()
+"""Sentinel: Blosc zstd level 3 with byte shuffle. Pass ``None`` for no compression."""
+
+
+def make_compressor(name: str = "zstd", clevel: int = 3) -> BloscCodec | None:
+    """Blosc codec for the data variables, or None for uncompressed."""
+    if name in {"none", "None", ""}:
+        return None
+    return BloscCodec(cname=name, clevel=clevel, shuffle="shuffle", blocksize=0)
+
+
+@dataclasses.dataclass
+class _PyramidGeometry:
+    data_vars: list[Hashable]
+    native_width: int
+    native_height: int
+    native_crs: Any
+    native_bounds: tuple[float, float, float, float]
+    native_px: tuple[float, float]
+    overview_levels: list[OverviewLevelJSON]
+
+
+def _chunks_along(size: int, chunk: int) -> tuple[int, ...]:
+    full, rest = divmod(size, chunk)
+    return (chunk,) * full + ((rest,) if rest else ())
+
+
+_ARRAY_CACHE: dict[tuple[str, str, str], zarr.Array] = {}
+
+
+def _open_array_cached(store: StoreLike, path: str, run_token: str) -> zarr.Array:
+    """Open a written level array once per process and pipeline run (one metadata GET)."""
+    key = (run_token, repr(store), path)
+    arr = _ARRAY_CACHE.get(key)
+    if arr is None:
+        if len(_ARRAY_CACHE) > 256:
+            _ARRAY_CACHE.clear()
+        arr = zarr.open_array(store, path=path, mode="r", zarr_format=3)
+        _ARRAY_CACHE[key] = arr
+    return arr
+
+
+def _read_reduce_block(
+    block_id: tuple[int, ...] | None = None,
+    *,
+    store: StoreLike,
+    path: str,
+    run_token: str,
+    level_shape: tuple[int, ...],
+    spatial_chunk: int,
+    fy: int,
+    fx: int,
+    method: str,
+    nodata_value: float | None,
+    out_dtype: Any,
+) -> np.ndarray:
+    """
+    One overview shard from its parent shards, read from the store one at a time.
+
+    Task memory is one parent shard plus the output block, whatever the level size, and a
+    parent shard that holds no valid pixel costs one GET and a scan.
+    """
+    assert block_id is not None
+    arr = _open_array_cached(store, path, run_token)
+    nlead = len(level_shape) - 2
+    by, bx = block_id[-2:]
+    y0, x0 = by * spatial_chunk, bx * spatial_chunk
+    th = min(spatial_chunk, level_shape[-2] - y0)
+    tw = min(spatial_chunk, level_shape[-1] - x0)
+    out = np.empty((1,) * nlead + (th, tw), dtype=out_dtype)
+    lead_index = tuple(int(i) for i in block_id[:nlead])
+    step_y, step_x = max(1, spatial_chunk // fy), max(1, spatial_chunk // fx)
+    for qy in range(0, th, step_y):
+        oh = min(step_y, th - qy)
+        for qx in range(0, tw, step_x):
+            ow = min(step_x, tw - qx)
+            py0, px0 = (y0 + qy) * fy, (x0 + qx) * fx
+            sub = arr[lead_index + (slice(py0, py0 + oh * fy), slice(px0, px0 + ow * fx))]
+            out[(0,) * nlead + (slice(qy, qy + oh), slice(qx, qx + ow))] = utils.reduce_block(
+                sub, fy, fx, method, nodata_value, out_dtype
+            )
+    return out
+
+
+def _overview_arrays_from_store(
+    store: StoreLike,
+    parent_path: str,
+    parent_ds: xr.Dataset,
+    data_vars: Sequence[Hashable],
+    height: int,
+    width: int,
+    spatial_chunk: int,
+    method: str,
+    nodata_value: float | None,
+    run_token: str,
+) -> dict[Hashable, da.Array]:
+    """Lazy overview arrays, one task per output shard (see :func:`_read_reduce_block`)."""
+    arrays: dict[Hashable, da.Array] = {}
+    for var in data_vars:
+        pv = parent_ds[var]
+        lead_dims = [d for d in pv.dims if d not in SPATIAL_DIMS]
+        pv = pv.transpose(*lead_dims, *SPATIAL_DIMS)
+        ph, pw = pv.shape[-2:]
+        lead_shape = tuple(int(n) for n in pv.shape[:-2])
+        chunks = (
+            *[(1,) * n for n in lead_shape],
+            _chunks_along(height, spatial_chunk),
+            _chunks_along(width, spatial_chunk),
+        )
+        arrays[var] = da.map_blocks(
+            _read_reduce_block,
+            chunks=chunks,
+            dtype=pv.dtype,
+            store=store,
+            path=_join_path(parent_path, str(var)),
+            run_token=run_token,
+            level_shape=(*lead_shape, height, width),
+            spatial_chunk=spatial_chunk,
+            fy=ph // height,
+            fx=pw // width,
+            method=method,
+            nodata_value=nodata_value,
+            out_dtype=pv.dtype,
+        )
+    return arrays
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -171,6 +307,7 @@ def create_geozarr_dataset(
     nodata_value: float | None = None,
     s3_profile: str | None = None,
     store: StoreLike | None = None,
+    compressor: Any = DEFAULT_COMPRESSOR,
 ) -> xr.DataTree:
     """
     Create a GeoZarr-spec 0.4 compliant dataset from EOPF data.
@@ -206,6 +343,9 @@ def create_geozarr_dataset(
         Kept for CLI compatibility; credentials come from the environment
     store : zarr store, optional
         Store to write to. Built from ``output_path`` when omitted.
+    compressor : zarr codec, optional
+        Codec for the data variables of every level; see :func:`make_compressor`.
+        Default Blosc zstd level 3 with byte shuffle; ``None`` writes uncompressed.
 
     Returns
     -------
@@ -220,7 +360,8 @@ def create_geozarr_dataset(
         )
 
     dt = dt_input.copy()
-    compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle", blocksize=0)
+    if compressor is DEFAULT_COMPRESSOR:
+        compressor = make_compressor()
     if store is None:
         store = get_zarr_store(output_path, s3_profile)
 
@@ -547,13 +688,23 @@ def write_geozarr_group(
         ds, compressor, tile_width, spatial_chunk, enable_sharding
     )
 
-    # Write native data in the group 0 (overview level 0)
-    level0_path = _join_path(group_path, 0)
-    existing_native_dataset = _load_existing_dataset(store, level0_path, spatial_chunk)
-
     _data_vars_to_check = [
         var for var in ds.data_vars if not utils.is_grid_mapping_variable(ds, var)
     ]
+
+    # One dask block per shard for every data variable: the level-0 write and the fused
+    # level-1 reduction below share these blocks.
+    for var in _data_vars_to_check:
+        if isinstance(ds[var].data, da.Array):
+            ds[var] = ds[var].chunk(
+                _dask_chunks_for(encoding.get(var, {}), ds[var].dims, spatial_chunk)
+            )
+
+    geometry = _pyramid_geometry(ds, group_name, min_dimension, tile_width, None)
+
+    # Write native data in the group 0 (overview level 0)
+    level0_path = _join_path(group_path, 0)
+    existing_native_dataset = _load_existing_dataset(store, level0_path, spatial_chunk)
 
     if _is_level_complete(
         existing_native_dataset, _data_vars_to_check
@@ -564,6 +715,35 @@ def write_geozarr_group(
         )
         ds = _normalize_north_up(existing_native_dataset)
     else:
+        # Level 1 is reduced from the level-0 blocks while they are in memory, so the
+        # largest level is read and decoded once instead of twice.
+        fused_level = None
+        if FUSE_LEVEL_1 and geometry is not None and len(geometry.overview_levels) > 1:
+            level1_path = _join_path(group_path, 1)
+            existing_l1 = _load_existing_dataset(store, level1_path, spatial_chunk)
+            if not (
+                _is_level_complete(existing_l1, _data_vars_to_check)
+                and _is_level_valid(existing_l1)
+            ):
+                l1 = geometry.overview_levels[1]
+                ov = create_overview_dataset_all_vars(
+                    ds,
+                    1,
+                    int(l1["width"]),
+                    int(l1["height"]),
+                    geometry.native_crs,
+                    geometry.native_bounds,
+                    geometry.data_vars,
+                    None,
+                    enable_sharding,
+                    method=method,
+                    nodata_value=nodata_value,
+                    native_px=geometry.native_px,
+                )
+                ov, enc1 = _prepare_overview_for_write(
+                    ov, 1, spatial_chunk, compressor, tile_width, enable_sharding
+                )
+                fused_level = (level1_path, ov, enc1)
         success, ds = write_dataset_band_by_band_with_validation(
             ds,
             existing_native_dataset,
@@ -573,6 +753,7 @@ def write_geozarr_group(
             level0_path,
             spatial_chunk,
             False,
+            fused_level=fused_level,
         )
         if not success:
             raise RuntimeError(f"Failed to write all bands for {group_name}")
@@ -598,6 +779,8 @@ def write_geozarr_group(
             enable_sharding=enable_sharding,
             method=method,
             nodata_value=nodata_value,
+            compressor=compressor,
+            geometry=geometry,
         )
     except Exception as e:
         print(f"❌ Failed to create multiscales for {group_name}: {e}")
@@ -611,40 +794,20 @@ def write_geozarr_group(
     return dt
 
 
-def create_geozarr_compliant_multiscales(
+def _pyramid_geometry(
     ds: xr.Dataset,
-    store: StoreLike,
     group_name: str,
-    min_dimension: int = 256,
-    tile_width: int = 256,
-    spatial_chunk: int = 4096,
-    ds_gcp: xr.Dataset | None = None,
-    enable_sharding: bool = False,
-    method: str = "mean",
-    nodata_value: float | None = None,
-) -> dict[str, Any]:
-    """
-    Create GeoZarr-spec compliant multiscales following the specification exactly.
-
-    Every level L has a pixel size of exactly 2**L native pixels anchored at the
-    top-left corner (COG convention). Its extent is therefore shorter at the right
-    and bottom by the rows/columns trimmed by the /2 reduction, which is what the
-    reduced data actually covers.
-
-    Returns
-    -------
-    dict
-        Dictionary with overview levels information
-    """
-    compressor = BloscCodec(cname="zstd", clevel=3, shuffle="shuffle")
-    group_path = _group_path(group_name)
-
+    min_dimension: int,
+    tile_width: int,
+    ds_gcp: xr.Dataset | None,
+) -> _PyramidGeometry | None:
+    """Native extent, pixel size and the overview levels of a group; None without data."""
     # Get spatial information from the first data variable
     data_vars = [
         var for var in ds.data_vars if not utils.is_grid_mapping_variable(ds, var)
     ]
     if not data_vars:
-        return {}
+        return None
 
     first_var = data_vars[0]
     native_height, native_width = ds[first_var].shape[-2:]
@@ -696,6 +859,93 @@ def create_geozarr_compliant_multiscales(
     overview_levels = calculate_overview_levels(
         native_width, native_height, min_dimension, tile_width
     )
+
+    return _PyramidGeometry(
+        data_vars=data_vars,
+        native_width=native_width,
+        native_height=native_height,
+        native_crs=native_crs,
+        native_bounds=native_bounds,
+        native_px=native_px,
+        overview_levels=overview_levels,
+    )
+
+
+def _prepare_overview_for_write(
+    overview_ds: xr.Dataset,
+    level: int,
+    spatial_chunk: int,
+    compressor: Any,
+    tile_width: int,
+    enable_sharding: bool,
+) -> tuple[xr.Dataset, dict[Hashable, XarrayEncodingJSON]]:
+    """One block per shard, encoding, north-up check, transform and grid_mapping pinned."""
+    chunks: dict[Hashable, int] = {"x": spatial_chunk, "y": spatial_chunk}
+    chunks.update({dim: 1 for dim in overview_ds.dims if dim not in SPATIAL_DIMS})
+    overview_ds = overview_ds.chunk(chunks)
+
+    encoding = _create_geozarr_encoding(
+        overview_ds, compressor, tile_width, spatial_chunk, enable_sharding
+    )
+
+    # Ensure north-up / west-east convention before writing and update the
+    # GeoTransform in spatial_ref so rasterio sees consistent bounds+transform.
+    if "y" in overview_ds.coords and len(overview_ds.coords["y"]) > 1:
+        if float(overview_ds.coords["y"].values[0]) < float(
+            overview_ds.coords["y"].values[-1]
+        ):
+            overview_ds = overview_ds.isel(y=slice(None, None, -1))
+    if "spatial_ref" in overview_ds:
+        _ov_tf = overview_ds.rio.transform(recalc=True)
+        overview_ds.rio.write_transform(_ov_tf, grid_mapping_name="spatial_ref", inplace=True)
+    _validate_pyramid_level(overview_ds, level)
+    _pin_grid_mapping(overview_ds)
+    return overview_ds, encoding
+
+
+def create_geozarr_compliant_multiscales(
+    ds: xr.Dataset,
+    store: StoreLike,
+    group_name: str,
+    min_dimension: int = 256,
+    tile_width: int = 256,
+    spatial_chunk: int = 4096,
+    ds_gcp: xr.Dataset | None = None,
+    enable_sharding: bool = False,
+    method: str = "mean",
+    nodata_value: float | None = None,
+    compressor: Any = DEFAULT_COMPRESSOR,
+    geometry: _PyramidGeometry | None = None,
+) -> dict[str, Any]:
+    """
+    Create GeoZarr-spec compliant multiscales following the specification exactly.
+
+    Every level L has a pixel size of exactly 2**L native pixels anchored at the
+    top-left corner (COG convention). Its extent is therefore shorter at the right
+    and bottom by the rows/columns trimmed by the /2 reduction, which is what the
+    reduced data actually covers.
+
+    Returns
+    -------
+    dict
+        Dictionary with overview levels information
+    """
+    if compressor is DEFAULT_COMPRESSOR:
+        compressor = make_compressor()
+    group_path = _group_path(group_name)
+    run_token = uuid.uuid4().hex
+
+    g = geometry
+    if g is None:
+        g = _pyramid_geometry(ds, group_name, min_dimension, tile_width, ds_gcp)
+    if g is None:
+        return {}
+    data_vars = g.data_vars
+    native_width, native_height = g.native_width, g.native_height
+    native_crs, native_bounds, native_px = g.native_crs, g.native_bounds, g.native_px
+    overview_levels = g.overview_levels
+    left, bottom, right, top = native_bounds
+    native_px_w, native_px_h = native_px
 
     print(f"Total overview levels: {len(overview_levels)}")
     for ol in overview_levels:
@@ -777,8 +1027,10 @@ def create_geozarr_compliant_multiscales(
     # Read level 0 from the store: one dask block per shard, no link to the input graph.
     level_0_path = _join_path(group_path, 0)
     previous_level_ds = _load_existing_dataset(store, level_0_path, spatial_chunk)
+    previous_level_path: str | None = level_0_path
     if previous_level_ds is None:
         previous_level_ds = ds
+        previous_level_path = None
     previous_level_ds = _normalize_north_up(previous_level_ds)
     _validate_pyramid_level(previous_level_ds, f"{group_name}/0")
 
@@ -802,6 +1054,7 @@ def create_geozarr_compliant_multiscales(
             )
             overview_datasets[level] = _existing_level_ds
             previous_level_ds = _normalize_north_up(_existing_level_ds)
+            previous_level_path = level_path
             continue
 
         width = overview["width"]
@@ -819,7 +1072,24 @@ def create_geozarr_compliant_multiscales(
         else:
             ds_gcp_overview = None
 
-        # Create overview dataset (lazy)
+        # Overview data: one task per output shard that reads its parent shards from the
+        # store one at a time (no 2x2 block merge), or from the in-memory parent when the
+        # previous level is not on the store.
+        data_arrays = None
+        n_blocks = -(-height // spatial_chunk) * -(-width // spatial_chunk)
+        if previous_level_path is not None and n_blocks >= MIN_BLOCKS_FROM_STORE:
+            data_arrays = _overview_arrays_from_store(
+                store,
+                previous_level_path,
+                previous_level_ds,
+                data_vars,
+                height,
+                width,
+                spatial_chunk,
+                method,
+                nodata_value,
+                run_token,
+            )
         overview_ds = create_overview_dataset_all_vars(
             previous_level_ds,
             level,
@@ -833,33 +1103,11 @@ def create_geozarr_compliant_multiscales(
             method=method,
             nodata_value=nodata_value,
             native_px=native_px,
+            data_arrays=data_arrays,
         )
-
-        # Downsampled blocks are half a shard; merge 2x2 of them into one block per shard.
-        # Non-spatial dims: one slice per block, so task memory is bounded by spatial_chunk².
-        chunks: dict[Hashable, int] = {"x": spatial_chunk, "y": spatial_chunk}
-        chunks.update({dim: 1 for dim in overview_ds.dims if dim not in SPATIAL_DIMS})
-        overview_ds = overview_ds.chunk(chunks)
-
-        # Create encoding for this overview level
-        encoding = _create_geozarr_encoding(
-            overview_ds, compressor, tile_width, spatial_chunk, enable_sharding
+        overview_ds, encoding = _prepare_overview_for_write(
+            overview_ds, level, spatial_chunk, compressor, tile_width, enable_sharding
         )
-
-        # Ensure north-up / west-east convention before writing and update the
-        # GeoTransform in spatial_ref so rasterio sees consistent bounds+transform.
-        if "y" in overview_ds.coords and len(overview_ds.coords["y"]) > 1:
-            if float(overview_ds.coords["y"].values[0]) < float(
-                overview_ds.coords["y"].values[-1]
-            ):
-                overview_ds = overview_ds.isel(y=slice(None, None, -1))
-        if "spatial_ref" in overview_ds:
-            _ov_tf = overview_ds.rio.transform(recalc=True)
-            overview_ds.rio.write_transform(
-                _ov_tf, grid_mapping_name="spatial_ref", inplace=True
-            )
-        _validate_pyramid_level(overview_ds, level)
-        _pin_grid_mapping(overview_ds)
 
         # Write overview level: one dask block per shard, one compute per level
         start_time = time.time()
@@ -899,8 +1147,10 @@ def create_geozarr_compliant_multiscales(
                 f"  ⚠️ Could not reload level {level} from the store, using in-memory dataset"
             )
             previous_level_ds = overview_ds
+            previous_level_path = None
         else:
             previous_level_ds = _normalize_north_up(previous_level_ds)
+            previous_level_path = level_path
 
     print(
         f"\n✅ Created {len(overview_levels)} GeoZarr-compliant overview levels using pyramid approach"
@@ -1049,9 +1299,14 @@ def create_overview_dataset_all_vars(
     method: str = "mean",
     nodata_value: float | None = None,
     native_px: tuple[float, float] | None = None,
+    data_arrays: Mapping[Hashable, da.Array] | None = None,
 ) -> xr.Dataset:
     """
     Create an overview dataset containing all variables for a specific level (lazy).
+
+    ``data_arrays`` supplies ready-made lazy arrays per variable (see
+    :func:`_overview_arrays_from_store`); otherwise the reduction runs on the dask blocks
+    of ``ds``.
 
     The pixel size of the level is exactly 2**level native pixels (when ``native_px``
     is given), anchored at the top-left corner of the native bounds.
@@ -1116,47 +1371,31 @@ def create_overview_dataset_all_vars(
         print(f"  Downsampling {var}...")
 
         source_data = ds[var]
-        data = source_data.data
-        data_dtype = data.dtype
-
-        if not isinstance(data, da.Array):
-            data = da.from_array(data, chunks="auto")
-
-        if source_data.ndim == 3:
-            non_spatial_dim = next(
-                dim for dim in source_data.dims if dim not in spatial_dims
-            )
-            dims = [non_spatial_dim, *spatial_dims]
-
-            # Normalize (y, x, band) → (band, y, x), lazily
-            data_3d = source_data.transpose(*dims).data
-            if not isinstance(data_3d, da.Array):
-                data_3d = da.from_array(data_3d, chunks="auto")
-
-            downsampled_data = da.stack(
-                [
-                    utils.downsample_2d_array(
-                        data_3d[i],
-                        height,
-                        width,
-                        method=method,
-                        nodata_value=nodata_value,
-                    )
-                    for i in range(data_3d.shape[0])
-                ],
-                axis=0,
-            )
+        data_dtype = source_data.dtype
+        if source_data.ndim > 2:
+            lead = [d for d in source_data.dims if d not in spatial_dims]
+            source_data = source_data.transpose(*lead, *spatial_dims)
+            dims = [*lead, *spatial_dims]
         else:
-            downsampled_data = utils.downsample_2d_array(
-                data, height, width, method=method, nodata_value=nodata_value
-            )
             dims = spatial_dims
 
-        # Integer outputs: round to nearest instead of truncating toward zero.
-        if np.issubdtype(data_dtype, np.integer) and np.issubdtype(
-            downsampled_data.dtype, np.floating
-        ):
-            downsampled_data = da.rint(downsampled_data)
+        if data_arrays is not None and var in data_arrays:
+            downsampled_data = data_arrays[var]
+        else:
+            data = source_data.data
+            if not isinstance(data, da.Array):
+                data = da.from_array(data, chunks="auto")
+            if data.ndim > 2:
+                # one slice per block on non-spatial dims: task memory stays spatial_chunk²
+                data = data.rechunk({i: 1 for i in range(data.ndim - 2)})
+            downsampled_data = utils.downsample_2d_array(
+                data,
+                height,
+                width,
+                method=method,
+                nodata_value=nodata_value,
+                out_dtype=data_dtype,
+            )
 
         attrs = {
             "_ARRAY_DIMENSIONS": dims,
@@ -1165,7 +1404,7 @@ def create_overview_dataset_all_vars(
         if "standard_name" in ds[var].attrs:
             attrs["standard_name"] = ds[var].attrs["standard_name"]
 
-        overview_data_vars[var] = (dims, downsampled_data.astype(data_dtype), attrs)
+        overview_data_vars[var] = (dims, downsampled_data, attrs)
 
     # Create overview dataset
     overview_ds = xr.Dataset(overview_data_vars, coords=overview_coords)
@@ -1191,6 +1430,7 @@ def write_dataset_band_by_band_with_validation(
     group_name: str,
     spatial_chunk: int = 4096,
     force_overwrite: bool = False,
+    fused_level: tuple[str, xr.Dataset, dict[Hashable, XarrayEncodingJSON]] | None = None,
 ) -> tuple[bool, xr.Dataset]:
     """
     Write dataset band by band with individual band validation.
@@ -1217,6 +1457,9 @@ def write_dataset_band_by_band_with_validation(
         Dask block size on y/x for unsharded variables
     force_overwrite : bool, default False
         Force overwrite existing bands even if they're valid
+    fused_level : (path, dataset, encoding), optional
+        An overview level derived from this dataset's dask blocks, written in the same
+        compute as the bands. On failure it is removed so the pyramid rebuilds it.
 
     Returns
     -------
@@ -1292,12 +1535,34 @@ def write_dataset_band_by_band_with_validation(
                     _write_var(var, compute=False, with_coords=(i == 0 and not coords_on_store))
                 )
                 coords_on_store = True
+            if fused_level is not None:
+                fused_path, fused_ds, fused_enc = fused_level
+                print(f"  Fusing overview level {fused_path} into the level-0 compute")
+                delayed.append(
+                    fused_ds.to_zarr(
+                        store,
+                        group=fused_path,
+                        mode="w",
+                        consolidated=False,
+                        zarr_format=3,
+                        encoding=fused_enc,
+                        align_chunks=not any(
+                            (e or {}).get("shards") for e in fused_enc.values()
+                        ),
+                        compute=False,
+                    )
+                )
             dask.compute(*delayed)
             written = list(to_write)
             for var in written:
                 print(f"    ✅ Successfully wrote {var}")
+            if fused_level is not None:
+                consolidate_metadata(store, path=fused_level[0])
+                print(f"    ✅ Successfully wrote fused level {fused_level[0]}")
         except Exception as e:
             print(f"    ⚠️ Batch write failed: {e}; re-validating per variable")
+            if fused_level is not None:
+                _delete_prefix(store, fused_level[0])
             reloaded = _load_existing_dataset(store, group_path, spatial_chunk)
             written = [
                 v
@@ -1555,7 +1820,9 @@ def _create_encoding(
             else:
                 chunking = ()
 
-        enc: XarrayEncodingJSON = {"compressors": [compressor]}
+        enc: XarrayEncodingJSON = {
+            "compressors": [compressor] if compressor is not None else None
+        }
         if chunking:
             enc["chunks"] = chunking
         encoding[var] = enc

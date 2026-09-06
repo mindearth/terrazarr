@@ -93,6 +93,8 @@ def main() -> None:
     p.add_argument("--sharding", action="store_true")
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--compressor", default="zstd", help="optimized only: blosc codec name or none")
+    p.add_argument("--clevel", type=int, default=3, help="optimized only: blosc level")
     p.add_argument("--workers", type=int, default=1, help="dask worker processes (>1: threads are split across them; store counters then cover the main process only)")
     args = p.parse_args()
 
@@ -101,7 +103,7 @@ def main() -> None:
         from geozarr_baseline.geozarr import create_geozarr_dataset
         from geozarr_baseline.store import get_zarr_store, set_spatial_info
     else:
-        from geozarr_pyramid.geozarr import create_geozarr_dataset
+        from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
         from geozarr_pyramid.store import get_zarr_store, set_spatial_info
 
     import xarray as xr
@@ -130,11 +132,15 @@ def main() -> None:
     err = None
     task_stream = get_task_stream(client=client)
     task_stream.__enter__()
+    extra = {}
+    if args.impl == "optimized":
+        extra["compressor"] = make_compressor(args.compressor, args.clevel)
     try:
         create_geozarr_dataset(
             dt, groups=["/"], output_path=args.output,
             spatial_chunk=args.chunk_size, min_dimension=args.tile_width, tile_width=args.tile_width,
             max_retries=1, enable_sharding=args.sharding, method=args.method, nodata_value=args.nodata,
+            **extra,
         )
     except Exception as e:  # report, don't hide
         err = f"{type(e).__name__}: {e}"

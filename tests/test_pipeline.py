@@ -109,3 +109,51 @@ def test_validate_existing_band_accepts_nan_and_rejects_dtype_mismatch(tmp_path,
     other = ds.copy()
     other["data"] = other["data"].astype("uint8")
     assert not utils.validate_existing_band_data(ds, "data", other)
+
+
+def _reference_levels(l0, nlevels, nodata, dtype):
+    levels = [l0]
+    for _ in range(1, nlevels):
+        prev = levels[-1]
+        levels.append(utils.reduce_block(prev, 2, 2, "mean", nodata_value=nodata, out_dtype=dtype))
+    return levels
+
+
+@pytest.mark.parametrize("fuse", [True, False])
+def test_fused_level1_store_levels_and_resume(tmp_path, dask_client, monkeypatch, fuse):
+    """Level 1 fused with the level-0 write (or not), level 2 from the store one shard per
+    task (16 shards), level 3 from memory (4 shards); all equal to the iterated kernel."""
+    monkeypatch.setattr(geozarr, "FUSE_LEVEL_1", fuse)
+    inp = make_input(tmp_path / "in.zarr", shape=(1000, 1000), input_chunk=250)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    root = zarr.open_group(get_zarr_store(out), mode="r")
+    nlevels = len(root.attrs["multiscales"]["layout"])
+    assert nlevels == 4
+    l0 = _open_level(out, 0)["data"].values
+    for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
+        got = _open_level(out, lv)
+        np.testing.assert_array_equal(got["data"].values, ref)
+        assert got.rio.crs is not None
+        assert zarr.open_array(get_zarr_store(out), path=f"{lv}/data", mode="r").shards == (min(64, ref.shape[0]), min(64, ref.shape[1]))
+
+    # resume: nothing is rewritten
+    files = sorted(os.path.join(r, f) for lv in range(nlevels) for r, _, fs in os.walk(os.path.join(out, str(lv), "data", "c")) for f in fs)
+    assert len(files) > 20
+    before = {f: os.stat(f).st_mtime_ns for f in files}
+    time.sleep(0.05)
+    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    assert {f: os.stat(f).st_mtime_ns for f in files} == before
+
+
+def test_pipeline_float_nan_nodata_and_compressor_none(tmp_path, dask_client):
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=256, dtype="float32", nodata=None)
+    out = str(tmp_path / "out.zarr")
+    from geozarr_pyramid.geozarr import make_compressor
+    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", compressor=make_compressor("none"))
+    arr = zarr.open_array(get_zarr_store(out), path="1/data", mode="r")
+    assert arr.compressors == ()
+    l0 = _open_level(out, 0)["data"].values
+    l1 = _open_level(out, 1)["data"].values
+    np.testing.assert_allclose(l1, utils.reduce_block(l0, 2, 2, "mean", out_dtype="float32"), rtol=1e-6)
+    assert np.isnan(l1[-1, -1]), "NaN block stays NaN"
