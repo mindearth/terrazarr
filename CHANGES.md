@@ -15,6 +15,7 @@ Baseline: `me-geotools` `src/me_geotools/zarr_pyramid_v3` at commit `bd5ef00` (k
 | 8 | Existing-band validation checks presence, shape, dtype, `_ARRAY_DIMENSIONS`, CRS and readability of one chunk. `standard_name` is no longer required and a NaN sample is not a failure. `utils.all_chunks_written` offers a strict check. | D1 | `utils.validate_existing_band_data` |
 | 9 | Level L pixel size is exactly `2**L` native pixels, anchored top-left; level bbox follows the trimmed extent. Applied to level coordinates, `spatial_ref` GeoTransform, multiscales layout and tile matrix set. | D2 | `_level_pixel_size`, `create_overview_dataset_all_vars`, `create_native_crs_tile_matrix_set` |
 | 10 | Integer overviews round to nearest before the cast. | D3 | `create_overview_dataset_all_vars` |
+| 11 | `grid_mapping` is pinned into `attrs` before every write. An explicit `encoding=` passed to `to_zarr` replaces the variable encoding, where rioxarray keeps `grid_mapping`, so the baseline never stored it and a written level could not be decoded with a CRS (`ds.rio.crs` was `None`). Found on the MinIO test. | S3 test | `_pin_grid_mapping` |
 | – | Multiscale failures are re-raised; `_create_encoding` call fixed (was a `TypeError` for non-GeoZarr groups); `--nodata` accepts floats; numpy fallback uses `chunks="auto"`. | D4, L4 | |
 
 ## Output differences to expect

@@ -7,3 +7,4 @@ dist/
 bench/out/
 bench/data/
 .pytest_cache/
+.venv-baseline/

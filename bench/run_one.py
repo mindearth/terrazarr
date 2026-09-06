@@ -19,11 +19,66 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def count_files(path: str) -> int:
+def count_objects(path: str) -> int:
+    """Files under a local path, or objects under an s3:// prefix."""
+    if path.startswith("s3://"):
+        import obstore
+        from geozarr_pyramid.store import get_obstore
+
+        return sum(1 for _ in obstore.list(get_obstore(path)).collect())
     n = 0
     for _root, _dirs, files in os.walk(path):
         n += len(files)
     return n
+
+
+def remove_output(path: str) -> None:
+    if path.startswith("s3://"):
+        import obstore
+        from geozarr_pyramid.store import get_obstore
+
+        st = get_obstore(path)
+        keys = [o["path"] for o in obstore.list(st).collect()]
+        if keys:
+            obstore.delete(st, keys)
+        return
+    import shutil
+
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def instrument_stores(counters: Counter) -> None:
+    """Count chunk/metadata traffic on every zarr store class either implementation can use."""
+    import zarr
+
+    def is_chunk(key: str) -> bool:
+        return "/c/" in key or key.startswith("c/")
+
+    classes = [zarr.storage.LocalStore, zarr.storage.ObjectStore]
+    try:
+        classes.append(zarr.storage.FsspecStore)
+    except AttributeError:
+        pass
+    for cls in classes:
+        _get, _set = cls.get, cls.set
+
+        async def get(self, key, prototype, byte_range=None, _get=_get):
+            counters["get_chunk" if is_chunk(key) else "get_meta"] += 1
+            return await _get(self, key, prototype, byte_range)
+
+        async def set_(self, key, value, _set=_set):
+            counters["set_chunk" if is_chunk(key) else "set_meta"] += 1
+            return await _set(self, key, value)
+
+        cls.get, cls.set = get, set_
+        if hasattr(cls, "delete"):
+            _delete = cls.delete
+
+            async def delete(self, key, _delete=_delete):
+                counters["delete"] += 1
+                return await _delete(self, key)
+
+            cls.delete = delete
 
 
 def main() -> None:
@@ -48,35 +103,17 @@ def main() -> None:
         from geozarr_pyramid.geozarr import create_geozarr_dataset
         from geozarr_pyramid.store import get_zarr_store, set_spatial_info
 
-    import shutil
     import xarray as xr
-    import zarr
     from dask.distributed import Client, get_task_stream
 
-    # --- instrument every LocalStore in the process (reads and writes, both impls)
     counters: Counter = Counter()
-    LocalStore = zarr.storage.LocalStore
-    _get, _set, _delete = LocalStore.get, LocalStore.set, LocalStore.delete
-
-    async def get(self, key, prototype, byte_range=None):
-        counters["get_chunk" if "/c/" in key or key.startswith("c/") else "get_meta"] += 1
-        return await _get(self, key, prototype, byte_range)
-
-    async def set_(self, key, value):
-        counters["set_chunk" if "/c/" in key or key.startswith("c/") else "set_meta"] += 1
-        return await _set(self, key, value)
-
-    async def delete(self, key):
-        counters["delete"] += 1
-        return await _delete(self, key)
-
-    LocalStore.get, LocalStore.set, LocalStore.delete = get, set_, delete
+    instrument_stores(counters)
 
     client = Client(processes=False, n_workers=1, threads_per_worker=args.threads, dashboard_address=":0", silence_logs=50)
 
     if args.quiet:
         sys.stdout = open(os.devnull, "w")
-    shutil.rmtree(args.output, ignore_errors=True)
+    remove_output(args.output)
 
     ds = xr.open_dataset(
         get_zarr_store(args.input), engine="zarr",
@@ -114,7 +151,7 @@ def main() -> None:
         "store_get_meta": counters["get_meta"],
         "store_set_meta": counters["set_meta"],
         "store_delete": counters["delete"],
-        "files_on_disk": count_files(args.output),
+        "objects": count_objects(args.output),
         "peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
     }))
 

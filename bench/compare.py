@@ -34,7 +34,7 @@ METRICS = [
     ("store_get_chunk", "chunk GETs"),
     ("store_set_chunk", "chunk PUTs"),
     ("store_get_meta", "metadata GETs"),
-    ("files_on_disk", "files on disk"),
+    ("objects", "objects written"),
 ]
 
 

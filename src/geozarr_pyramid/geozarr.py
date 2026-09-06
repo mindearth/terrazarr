@@ -133,6 +133,24 @@ def _dask_chunks_for(
     return {d: (spatial_chunk if d in SPATIAL_DIMS else 1) for d in dims}
 
 
+def _pin_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Make the CF ``grid_mapping`` reference survive the write.
+
+    rioxarray keeps ``grid_mapping`` in ``encoding``; an explicit ``encoding=`` passed to
+    ``to_zarr`` replaces a variable's own encoding, so the attribute would be lost and the
+    written level could not be decoded with a CRS. Move it to ``attrs`` for every data
+    variable, and drop it from ``encoding`` so xarray does not see it twice.
+    """
+    for var in ds.data_vars:
+        v = ds[var]
+        name = v.encoding.get("grid_mapping") or v.attrs.get("grid_mapping")
+        if name and name in ds:
+            v.attrs["grid_mapping"] = name
+        v.encoding.pop("grid_mapping", None)
+    return ds
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -410,6 +428,7 @@ def iterative_copy(
                 f"Writing group '{current_group_path}' with data variables to GeoZarr DataTree"
             )
             encoding = _create_encoding(ds, compressor, spatial_chunk)
+            _pin_grid_mapping(ds)
             ds.to_zarr(
                 store,
                 group=_group_or_none(_group_path(current_group_path)),
@@ -840,6 +859,7 @@ def create_geozarr_compliant_multiscales(
                 _ov_tf, grid_mapping_name="spatial_ref", inplace=True
             )
         _validate_pyramid_level(overview_ds, level)
+        _pin_grid_mapping(overview_ds)
 
         # Write overview level: one dask block per shard, one compute per level
         start_time = time.time()
@@ -1246,9 +1266,9 @@ def write_dataset_band_by_band_with_validation(
         single_var_ds[var] = single_var_ds[var].chunk(
             _dask_chunks_for(var_enc, single_var_ds[var].dims, spatial_chunk)
         )
-        # xarray refuses an encoding for a variable that already exists: drop
-        # the on-disk chunk hints inherited from the source.
+        # Drop on-disk chunk hints inherited from the source; keep the CRS reference.
         single_var_ds[var].encoding = {k: v for k, v in enc.items() if k == "grid_mapping"}
+        _pin_grid_mapping(single_var_ds)
         return single_var_ds.to_zarr(
             store,
             group=_group_or_none(group_path),

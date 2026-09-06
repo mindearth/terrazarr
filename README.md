@@ -34,6 +34,8 @@ the tile width. Peak memory per task is about one `chunk-size²` block times a s
 
 ## Test and benchmark
 
+Local, synthetic inputs:
+
 ```bash
 .venv/bin/python -m pytest -q
 .venv/bin/python bench/compare.py              # writes bench/out/results.md
@@ -43,3 +45,25 @@ the tile width. Peak memory per task is about one `chunk-size²` block times a s
 Each benchmark run is a separate process with an in-process dask cluster, so store traffic,
 executed tasks and peak RSS of the whole pipeline are measured for both implementations on
 identical inputs.
+
+### Against MinIO
+
+```bash
+source bench/s3env.sh                       # exports MinIO credentials from ~/repos/.myenvs
+.venv/bin/python bench/tif_to_zarr.py --src s3://bucket/x.tif --dst s3://bucket/x.zarr \
+    --row0 74000 --col0 78000 --rows 32768 --cols 32768      # window of a striped GeoTIFF -> zarr input
+.venv/bin/python bench/run_one.py --impl optimized --input s3://bucket/x.zarr --output s3://bucket/out.zarr \
+    --chunk-size 4096 --tile-width 256 --sharding --method mean --nodata 0 --threads 8
+```
+
+The baseline needs `botocore < 1.36` against this MinIO (newer botocore omits the `Content-MD5`
+header that MinIO requires on bulk deletes, which s3fs uses; me-geotools pins it for the same
+reason). Build it once and run the baseline with that interpreter:
+
+```bash
+uv venv --python 3.11 .venv-baseline
+uv pip install --python .venv-baseline/bin/python -e . --group dev "s3fs==2024.12.0" "aiobotocore==2.15.2" "botocore<1.36"
+.venv-baseline/bin/python bench/run_one.py --impl baseline ...
+```
+
+The optimized module does not use s3fs and runs with current botocore. See `bench/results.md`.

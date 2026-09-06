@@ -62,3 +62,51 @@ threads per run: 4
 - Output comparison (`bench/compare_outputs.py`): s1 (min) and s4 (median) are identical at every level.
   s2 and s3 (mean on uint8) differ by at most 1 per level, compounding to 4 at level 6, because the
   baseline truncated integer means (change 10). All shapes here are powers of two, so pixel sizes agree.
+
+## Against MinIO: WSF3Dv3 Italy window
+
+Input: a 32768×32768 float64 window (row 74000, col 78000) of `WSF3Dv3_Italy.tif`, extracted to a
+2048-chunked zarr on MinIO with `bench/tif_to_zarr.py`. Both implementations write to the same
+MinIO bucket with `--tile-width 256 --method mean --nodata 0 --sharding --threads 8`.
+The baseline runs in `.venv-baseline` (botocore < 1.36, see README).
+
+### chunk 4096
+
+| metric | baseline | optimized | ratio |
+|---|---:|---:|---:|
+| wall time [s] | 61.34 | 57.79 | 0.94× |
+| peak RSS [MB] | 2789.6 | 2653.0 | 0.95× |
+| dask tasks | 821 | 822 | 1.00× |
+| chunk GETs | 543 | 455 | 0.84× |
+| chunk PUTs | 107 | 107 | 1.00× |
+| metadata GETs | 281 | 289 | 1.03× |
+| objects | 148 | 148 | 1.00× |
+
+### chunk 8192
+
+| metric | baseline | optimized | ratio |
+|---|---:|---:|---:|
+| wall time [s] | 70.74 | 61.26 | 0.87× |
+| peak RSS [MB] | 5053.0 | 8353.3 | 1.65× |
+| dask tasks | 742 | 237 | 0.32× |
+| chunk GETs | 22240 | 329 | 0.01× |
+| chunk PUTs | 44 | 44 | 1.00× |
+| metadata GETs | 281 | 289 | 1.03× |
+| objects | 85 | 85 | 1.00× |
+
+### Notes
+
+- The first baseline attempt failed at once with `Failed to write all bands`: the baseline never
+  stored `grid_mapping`, so its own re-validation of a written level found no CRS (change 11).
+  The numbers above are from the rerun with the fix applied to both implementations. Even so the
+  baseline output written here has no decodable CRS (`ds.rio.crs is None` at every level); the
+  optimized output has one.
+- Level-by-level comparison of the chunk-8192 outputs: values are identical at all 8 levels
+  (max |diff| 0), pixel sizes agree, shapes are powers of two.
+- At chunk 8192 the baseline issues 22 240 range requests for a 64-chunk input, i.e. it re-reads
+  the input per output tile. The optimized module reads each input chunk about five times in total
+  across the whole pyramid.
+- Peak RSS at chunk 8192 follows the memory model in the README: 8 threads × 8192² × 8 bytes is
+  4.3 GB of input blocks in flight, and the observed 8.4 GB is that times a factor of two. The
+  baseline uses less memory at 8192 only because it reads small pieces, which is what costs it the
+  22 240 GETs. Choose `--chunk-size`/`--threads` so that `threads × chunk² × itemsize × 2` fits.

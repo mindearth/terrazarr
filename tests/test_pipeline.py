@@ -58,6 +58,8 @@ def test_pipeline_2d_levels_and_georeferencing(tmp_path, dask_client):
         assert ds.rio.transform().e == pytest.approx(-px)
         assert ds.sizes["y"] == 1000 // 2**lv and ds.sizes["x"] == 1000 // 2**lv
         from_bounds(*ds.rio.bounds(recalc=True), transform=ds.rio.transform())  # rasterio-consistent
+        assert ds.rio.crs is not None and ds.rio.crs.to_epsg() == 3857, "grid_mapping must survive the write"
+        assert ds["data"].attrs.get("grid_mapping") == "spatial_ref" or ds["data"].encoding.get("grid_mapping") == "spatial_ref"
         # level origin is the native origin (top-left anchored)
         assert ds.rio.transform().c == pytest.approx(1_000_000.0)
         assert ds.rio.transform().f == pytest.approx(5_000_000.0)
