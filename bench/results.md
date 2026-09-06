@@ -226,3 +226,22 @@ Outputs are identical to the threaded run at every level. The downsample kernel 
 little from re-formulation (a nodata-0 special case without the `where` copy is 14 % faster);
 the large kernel win is skipping all-nodata blocks (`any()` on a 4096² block costs 7 ms against
 440 ms for the reduction), which applies to ~40 % of the input chunks of this raster.
+
+### Free-threaded Python
+
+Same window, same settings, on a free-threaded CPython 3.13.3 build (`uv venv --python 3.13t
+.venv-ft`; numpy 2.5.3, rasterio 1.5.1, pyproj 3.8.0 and numcodecs 0.16.5 built from source for
+the `t` ABI, zarr 3.3.0, obstore pinned to 0.10.1 which is the last release with a 3.13t wheel).
+`sys._is_gil_enabled()` is False after importing the whole stack.
+
+| interpreter | threads | wall [s] | CPU |
+|---|---:|---:|---:|
+| 3.11, GIL | 8 | 48.2 | 277 % |
+| 3.13t, `PYTHON_GIL=0` | 8 | 45.4 | 322 % |
+| 3.13t, `PYTHON_GIL=0` | 16 | 45.8 | 332 % |
+| 3.13t, `PYTHON_GIL=1` | 8 | 63.1 | 241 % |
+| 3.11, 8 processes | 8 | 23.4 | 1051 % |
+
+Removing the GIL buys 6 % and doubling the threads buys nothing, while the same work in 8
+processes halves the wall time. The serialisation is zarr's single asyncio event loop, not the
+GIL. A free-threaded build is not worth its dependency cost here (source builds, older obstore).
