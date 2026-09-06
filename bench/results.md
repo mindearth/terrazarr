@@ -121,9 +121,34 @@ Same 24-core / 43 GB machine, MinIO over the local network.
 | step | wall time | peak RSS [MB] | objects | size on MinIO [GB] |
 |---|---:|---:|---:|---:|
 | extract (`tif_to_zarr.py`, 175 strips of 1024 rows) | 259 s | ~14 000 | 5239 | 1.87 |
-| pyramid, 10 levels (optimized) | 1276 s (21 min) | 3450 | 2178 | 2.69 |
+| pyramid, 10 levels (optimized) | 1276 s (21.3 min) | 3450 | 2178 | 2.69 |
+| pyramid, 10 levels (baseline, `IMPL=baseline EXTRACT=0`) | 1344 s (22.4 min) | 3575 | 2166 | |
 
-Pyramid store traffic: 27 771 chunk GETs, 2 127 chunk PUTs, 355 metadata GETs, 26 956 dask tasks.
+| metric | baseline | optimized | ratio |
+|---|---:|---:|---:|
+| wall time [s] | 1343.97 | 1276.04 | 0.95× |
+| peak RSS [MB] | 3575.0 | 3450.1 | 0.97× |
+| dask tasks | 26955 | 26956 | 1.00× |
+| chunk GETs | 27914 | 27771 | 0.99× |
+| chunk PUTs | 2115 | 2127 | 1.01× |
+| metadata GETs | 341 | 355 | 1.04× |
+| objects | 2166 | 2178 | 1.01× |
+
+At chunk 4096 the two implementations do almost the same work on this raster: the input chunks
+(2048²) fit the output shards (4096²) exactly, so the baseline's per-tile re-reads that dominate
+the chunk-8192 window run do not occur. The gains here are in the output, not the runtime.
+
+Baseline vs optimized output (`italy_full_baseline.zarr` vs `italy_full_optimized.zarr`):
+
+- Values are identical at every level (levels 2–9 compared in full, levels 0–1 on four random
+  4096² blocks each); origins agree.
+- The baseline's overview levels (1–9) have no decodable CRS (change 11); the optimized output has
+  one at every level.
+- The baseline's pixel size drifts from `2**L` × native from level 3 on, because it derives it from
+  the trimmed extent divided by the shape; the drift is 0.2 % at level 9 (0.046087° vs 0.045994°),
+  which is 0.4 px of misregistration across the level (change 9).
+- The optimized output has 12 more objects: levels 6–9 are written as 2×2 shards sized to the
+  level (e.g. 2560×3072 at level 6) where the baseline writes a single 4096² shard.
 
 Checks on the written pyramid:
 
