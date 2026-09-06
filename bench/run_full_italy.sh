@@ -3,6 +3,9 @@
 #   IMPL=optimized|baseline   which module (baseline runs in .venv-baseline, see README)
 #   EXTRACT=1|0               run the GeoTIFF -> zarr extract (0: reuse the input already on MinIO)
 #   THREADS, STRIP            dask threads; rows per extract strip
+#   ROOT                      store root for input and output (default MinIO; a local dir for a
+#                             latency-free run, e.g. ROOT=bench/data/italy EXTRACT=0 TAG=_local)
+#   TAG                       suffix for the bench/out result files
 # Extract memory: peak RSS ~ 1.5 GB + THREADS x STRIP x width x itemsize (see README).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,8 +15,10 @@ EXTRACT=${EXTRACT:-1}
 THREADS=${THREADS:-8}
 STRIP=${STRIP:-1024}
 SRC=s3://wsf-artifacts/3d/local/italy/20240101/original/WSF3Dv3_Italy.tif
-IN=s3://test/geozzar-pyramid/input/WSF3Dv3_Italy_full.zarr
-OUT=s3://test/geozzar-pyramid/italy_full_${IMPL}.zarr
+ROOT=${ROOT:-s3://test/geozzar-pyramid}
+TAG=${TAG:-}
+IN=$ROOT/input/WSF3Dv3_Italy_full.zarr
+OUT=$ROOT/italy_full_${IMPL}.zarr
 PY=.venv/bin/python
 [ "$IMPL" = baseline ] && PY=.venv-baseline/bin/python
 if [ "$EXTRACT" = 1 ]; then
@@ -23,5 +28,5 @@ fi
 echo "== pyramid $IMPL $(date +%T)"
 "$PY" bench/run_one.py --impl "$IMPL" --input "$IN" --output "$OUT" \
   --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads "$THREADS" --quiet \
-  2> "bench/out/italy_full_${IMPL}.stderr" | tail -1 | tee "bench/out/italy_full_${IMPL}.json"
+  2> "bench/out/italy_full_${IMPL}${TAG}.stderr" | tail -1 | tee "bench/out/italy_full_${IMPL}${TAG}.json"
 echo "== done $(date +%T)"
