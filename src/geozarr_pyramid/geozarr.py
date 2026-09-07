@@ -244,6 +244,61 @@ def _read_reduce_block(
     return out
 
 
+def _write_and_reduce(
+    block: np.ndarray,
+    arr: zarr.Array,
+    fy: int,
+    fx: int,
+    method: str,
+    nodata_value: float | None,
+    out_dtype: Any,
+    block_info: Any = None,
+) -> np.ndarray:
+    """Write one level-0 shard and return its reduction for level 1: one read per block."""
+    loc = block_info[0]["array-location"]
+    arr[tuple(slice(a, b) for a, b in loc)] = block
+    return utils.reduce_block(block, fy, fx, method, nodata_value, out_dtype)
+
+
+def _fused_write_reduce_array(
+    data: da.Array,
+    store: StoreLike,
+    array_path: str,
+    target_height: int,
+    target_width: int,
+    method: str,
+    nodata_value: float | None,
+) -> da.Array:
+    """
+    Lazy level-1 array whose tasks also write the level-0 blocks of ``data`` to the array
+    already created at ``array_path``. Dask fuses a block read into its first consumer, so
+    two consumers of the input would read it twice; this keeps one read per block.
+    """
+    arr = zarr.open_array(store, path=array_path, mode="r+", zarr_format=3)
+    src_h, src_w = data.shape[-2:]
+    fy, fx = src_h // target_height, src_w // target_width
+    out_chunks = (
+        *data.chunks[:-2],
+        tuple(c // fy for c in data.chunks[-2]),
+        tuple(c // fx for c in data.chunks[-1]),
+    )
+    out = da.map_blocks(
+        _write_and_reduce,
+        data,
+        arr=arr,
+        fy=fy,
+        fx=fx,
+        method=method,
+        nodata_value=nodata_value,
+        out_dtype=data.dtype,
+        dtype=data.dtype,
+        chunks=out_chunks,
+    )
+    if out.shape[-2] != target_height or out.shape[-1] != target_width:
+        out = out[..., :target_height, :target_width]
+    return out
+
+
 def _overview_arrays_from_store(
     store: StoreLike,
     parent_path: str,
@@ -726,24 +781,37 @@ def write_geozarr_group(
                 and _is_level_valid(existing_l1)
             ):
                 l1 = geometry.overview_levels[1]
-                ov = create_overview_dataset_all_vars(
-                    ds,
-                    1,
-                    int(l1["width"]),
-                    int(l1["height"]),
-                    geometry.native_crs,
-                    geometry.native_bounds,
-                    geometry.data_vars,
-                    None,
-                    enable_sharding,
-                    method=method,
-                    nodata_value=nodata_value,
-                    native_px=geometry.native_px,
+                l1_h, l1_w = int(l1["height"]), int(l1["width"])
+                g = geometry
+
+                def _build_level1(
+                    arrays: Mapping[Hashable, da.Array], ds=ds, g=g
+                ) -> tuple[str, xr.Dataset, dict[Hashable, XarrayEncodingJSON]]:
+                    ov = create_overview_dataset_all_vars(
+                        ds,
+                        1,
+                        l1_w,
+                        l1_h,
+                        g.native_crs,
+                        g.native_bounds,
+                        g.data_vars,
+                        None,
+                        enable_sharding,
+                        method=method,
+                        nodata_value=nodata_value,
+                        native_px=g.native_px,
+                        data_arrays=arrays,
+                    )
+                    ov, enc1 = _prepare_overview_for_write(
+                        ov, 1, spatial_chunk, compressor, tile_width, enable_sharding
+                    )
+                    return level1_path, ov, enc1
+
+                fused_level = (
+                    level1_path,
+                    {"height": l1_h, "width": l1_w, "method": method, "nodata_value": nodata_value},
+                    _build_level1,
                 )
-                ov, enc1 = _prepare_overview_for_write(
-                    ov, 1, spatial_chunk, compressor, tile_width, enable_sharding
-                )
-                fused_level = (level1_path, ov, enc1)
         success, ds = write_dataset_band_by_band_with_validation(
             ds,
             existing_native_dataset,
@@ -1430,7 +1498,7 @@ def write_dataset_band_by_band_with_validation(
     group_name: str,
     spatial_chunk: int = 4096,
     force_overwrite: bool = False,
-    fused_level: tuple[str, xr.Dataset, dict[Hashable, XarrayEncodingJSON]] | None = None,
+    fused_level: tuple[str, dict[str, Any], Any] | None = None,
 ) -> tuple[bool, xr.Dataset]:
     """
     Write dataset band by band with individual band validation.
@@ -1457,9 +1525,11 @@ def write_dataset_band_by_band_with_validation(
         Dask block size on y/x for unsharded variables
     force_overwrite : bool, default False
         Force overwrite existing bands even if they're valid
-    fused_level : (path, dataset, encoding), optional
-        An overview level derived from this dataset's dask blocks, written in the same
-        compute as the bands. On failure it is removed so the pyramid rebuilds it.
+    fused_level : (path, spec, builder), optional
+        Level 1, written in the same compute as the bands: every band task writes its
+        level-0 block and returns the reduced block, and ``builder(arrays)`` turns those
+        lazy arrays into ``(path, dataset, encoding)`` for the level-1 write. On failure
+        the partial level is removed so the pyramid rebuilds it from the store.
 
     Returns
     -------
@@ -1530,13 +1600,26 @@ def write_dataset_band_by_band_with_validation(
             # Metadata (and numpy coordinates) are written eagerly by each call; the
             # chunk writes of every variable are computed together.
             delayed = []
+            fused_arrays: dict[Hashable, da.Array] = {}
             for i, var in enumerate(to_write):
-                delayed.append(
-                    _write_var(var, compute=False, with_coords=(i == 0 and not coords_on_store))
-                )
+                d = _write_var(var, compute=False, with_coords=(i == 0 and not coords_on_store))
                 coords_on_store = True
+                if fused_level is not None and isinstance(ds[var].data, da.Array):
+                    # metadata is on the store; the block writes come from the fused task
+                    spec = fused_level[1]
+                    fused_arrays[var] = _fused_write_reduce_array(
+                        ds[var].data,
+                        store,
+                        _join_path(group_path, str(var)),
+                        spec["height"],
+                        spec["width"],
+                        spec["method"],
+                        spec["nodata_value"],
+                    )
+                else:
+                    delayed.append(d)
             if fused_level is not None:
-                fused_path, fused_ds, fused_enc = fused_level
+                fused_path, fused_ds, fused_enc = fused_level[2](fused_arrays)
                 print(f"  Fusing overview level {fused_path} into the level-0 compute")
                 delayed.append(
                     fused_ds.to_zarr(

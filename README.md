@@ -48,7 +48,13 @@ Local, synthetic inputs:
 .venv/bin/python bench/compare.py              # writes bench/out/results.md
 TAG=_v2 bash bench/run_suite.sh                # every benchmark of bench/results.md (about an hour)
 .venv/bin/python bench/compare.py --only s1    # one scenario
+.venv/bin/python bench/compare_outputs.py A.zarr B.zarr   # two pyramids level by level, one shard at a time
 ```
+
+`compare_outputs.py` streams each level in 4096² blocks (`--chunk`, `--threads`), so it needs
+about 2 GB whatever the level size. Runs that may exceed the machine's memory are best started in
+their own cgroup, `systemd-run --user --scope -p MemoryMax=16G <cmd>`: an out-of-memory kill then
+takes only that job, not the terminal pane it runs in.
 
 Each benchmark run is a separate process with an in-process dask cluster, so store traffic,
 executed tasks and peak RSS of the whole pipeline are measured for both implementations on

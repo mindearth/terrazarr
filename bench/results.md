@@ -245,3 +245,84 @@ the `t` ABI, zarr 3.3.0, obstore pinned to 0.10.1 which is the last release with
 Removing the GIL buys 6 % and doubling the threads buys nothing, while the same work in 8
 processes halves the wall time. The serialisation is zarr's single asyncio event loop, not the
 GIL. A free-threaded build is not worth its dependency cost here (source builds, older obstore).
+
+## Suite v2: after changes 12–16
+
+`TAG=_v2 bash bench/run_suite.sh` on 2026-09-06 (22:20–23:17) at commit `b5333a4`, i.e. with the
+per-block reduction, the fused level 1, the shard-aligned overview tasks and the process-based
+defaults (changes 12–16). Same machine and settings as the sections above. Two dask layouts per
+run: `t8` is one process with 8 threads and carries the store counters; `w8` is 8 single-threaded
+worker processes and gives the wall time the CLI defaults now produce (its counters cover the
+main process only and are marked `*`). Raw output: `bench/out/suite_v2.log`,
+`bench/out/*_v2_*.json`, `bench/out/synthetic_v2.md`.
+
+### Synthetic scenarios (4 threads, baseline vs optimized)
+
+| scenario | baseline wall [s] | optimized wall [s] | ratio | optimized wall before 12–16 [s] | peak RSS baseline → optimized [MB] | chunk GETs baseline → optimized |
+|---|---:|---:|---:|---:|---:|---:|
+| s1: uint8 16384², sharded, min | 14.55 | 8.62 | 0.59× | 13.69 | 3815 → 909 | 1999 → 177 |
+| s2: uint8 16384², unsharded, mean | 32.46 | 9.96 | 0.31× | 13.72 | 2241 → 885 | 5542 → 1508 |
+| s3: uint8 8×8192², sharded, mean | 22.66 | 12.58 | 0.56× | 20.13 | 1818 → 962 | 833 → 381 |
+| s4: float32 12288², sharded, median | 18.23 | 16.64 | 0.91× | 20.88 | 5022 → 2550 | 2561 → 417 |
+
+Dask tasks per run drop from 155–645 to 44–126 (one task per shard). Output comparison is as in
+the first section: s1 and s4 identical at every level, s2 and s3 differ by at most 1 per level
+(4 at level 6) from the baseline's truncated integer mean.
+
+### MinIO Italy window
+
+| chunk | layout | wall [s] | peak RSS [MB] | dask tasks | chunk GETs | chunk PUTs | objects |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 4096 | t8 | 59.46 | 2678 | 207 | 647 | 107 | 148 |
+| 4096 | w8 | 32.68 | 171* | 207 | 22* | 18* | 148 |
+| 8192 | t8 | 55.09 | 7337 | 63 | 569 | 44 | 85 |
+| 8192 | w8 | 36.93 | 170* | 63 | 22* | 18* | 85 |
+
+Before changes 12–16 (tables above): chunk 4096 57.79 s / 822 tasks / 455 GETs, chunk 8192
+61.26 s / 237 tasks / 329 GETs / 8353 MB.
+
+### Full WSF3Dv3 Italy, MinIO and local disk
+
+| store | layout | wall [s] | peak RSS [MB] | dask tasks | chunk GETs | chunk PUTs | objects |
+|---|---|---:|---:|---:|---:|---:|---:|
+| MinIO | t8 | 1203.02 (20.1 min) | 4261 | 5708 | 34239 | 2127 | 2178 |
+| MinIO | w8 | 460.54 (7.7 min) | 253* | 5708 | 42* | 34* | 2178 |
+| local | t8 | 1051.18 (17.5 min) | 3992 | 5708 | 34239 | 2127 | 2178 |
+| local | w8 | 346.44 (5.8 min) | 239* | 5708 | 42* | 34* | 2178 |
+
+Before changes 12–16: optimized 1276 s on MinIO and 1425 s locally with 26956 tasks and 27771
+GETs; baseline 1344 s and 1287 s. The process layout is 2.9× faster than the baseline on MinIO
+and 3.7× locally; the threaded layout gains 6 % and 26 %.
+
+All four outputs were compared with the earlier optimized output (MinIO runs) and with the
+baseline output (local runs): levels 2–9 in full, levels 0–1 on three random 4096² blocks each,
+max |diff| 0 at all 10 levels.
+
+### Notes
+
+- Threaded runs issue more chunk GETs than before (34239 against 27771 on full Italy, 647 against
+  455 on the window) although change 13 was meant to read level 0 once. The fused level-1 graph
+  shares no dask keys with the `to_zarr` graph that writes level 0, so dask reads every level-0
+  block twice, once per consumer. The wall time still fell because the reduction itself got
+  cheaper (change 12). Change 17 fixes the double read, see the next section.
+- Per-process counters: the `w8` rows count only the main process, which writes the metadata and
+  the small top levels. The number of tasks and objects is layout-independent.
+- Peak RSS of the threaded window run at chunk 8192 (7.3 GB) is unchanged in kind from the
+  earlier 8.4 GB: 8 threads × 8192² × 8 bytes of input in flight. Workers cap this per process.
+
+## Change 17: one read of level 0 (local 32768² Italy window)
+
+`run_one.py --impl optimized`, chunk 4096, tile 256, mean, nodata 0, sharding, 1 process × 8
+threads, input and output on local NVMe. The three variants differ only in how level 1 is built.
+
+| level 1 built by | wall [s] | dask tasks | chunk GETs | peak RSS [MB] |
+|---|---:|---:|---:|---:|
+| re-reading level 0 from the store (`GEOZARR_PYRAMID_FUSE_LEVEL_1=0`) | 43.9 | 125 | 453 | |
+| the level-0 dask blocks, second consumer (change 13) | 36.7 | 207 | 645 | |
+| the write task itself (change 17) | 28.9 | 140 | 389 | 2312 |
+
+The first two rows are from 2026-09-06, the third from 2026-09-07 with another job holding two
+cores, so its wall time is if anything pessimistic. 389 GETs is the 256 input chunks plus the
+parent-shard reads of levels 2–7; level 0 is decoded once. The change-17 output equals
+`win32k_baseline.zarr` at all 8 levels (`bench/compare_outputs.py`, max |diff| 0, 39 s, 2.1 GB
+peak with the blockwise comparison).
