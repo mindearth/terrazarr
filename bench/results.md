@@ -326,3 +326,32 @@ cores, so its wall time is if anything pessimistic. 389 GETs is the 256 input ch
 parent-shard reads of levels 2–7; level 0 is decoded once. The change-17 output equals
 `win32k_baseline.zarr` at all 8 levels (`bench/compare_outputs.py`, max |diff| 0, 39 s, 2.1 GB
 peak with the blockwise comparison).
+
+## Suite v3: change 17 on the MinIO window and full Italy
+
+Same runs as suite v2 (MinIO window at chunk 4096, full Italy on MinIO and on local NVMe, `t8`
+and `w8` layouts) with change 17, on 2026-09-07 07:21–08:21 at commit `f849095`. Raw output in
+`bench/out/suite_v3.log` and `bench/out/*_v3_*.json`.
+
+| input | layout | wall [s] | peak RSS [MB] | dask tasks | chunk GETs | chunk PUTs | objects |
+|---|---|---:|---:|---:|---:|---:|---:|
+| window, MinIO | t8 | 49.69 | 2303 | 140 | 391 | 107 | 148 |
+| window, MinIO | w8 | 38.79 | 171* | 140 | 22* | 18* | 148 |
+| full Italy, MinIO | t8 | 1199.96 (20.0 min) | 3953 | 3549 | 25615 | 2127 | 2178 |
+| full Italy, MinIO | w8 | 530.97 (8.8 min) | 244* | 3549 | 42* | 34* | 2178 |
+| full Italy, local | t8 | 1292.95 (21.5 min) | 3788 | 3549 | 25615 | 2127 | 2178 |
+| full Italy, local | w8 | 476.40 (7.9 min) | 230* | 3549 | 42* | 34* | 2178 |
+
+- Store traffic and task counts are the metrics change 17 targets and they are deterministic:
+  full Italy goes from 34239 chunk GETs and 5708 tasks (suite v2) to 25615 and 3549, below the
+  27771 GETs of the unfused pipeline and the 27914 of the baseline, because level 0 is now read
+  exactly once and level 1 needs no read at all. The window goes from 647 to 391 GETs.
+- Wall times are not comparable with suite v2: the machine carried another session's notebook
+  runs for the whole hour (load average 17–21 on 24 cores, 3–5 GB of kernels), so the `w8` runs
+  came out slower than the 460 s / 346 s of the quiet v2 run, which remain the reference wall
+  times. The window under the same load, threaded, still went from 59.5 s to 49.7 s.
+- All four outputs were compared with the baseline output on the same store in full at all 10
+  levels (`bench/compare_outputs.py --threads 8`, blockwise, 18–22 min and about 4 GB peak per
+  pair): max |diff| 0 everywhere, the first time levels 0 and 1 of full Italy were checked
+  exhaustively rather than on sampled blocks. Pixel sizes agree except the baseline's known
+  level-9 drift (0.046087° against the exact 0.045994°, change 9).

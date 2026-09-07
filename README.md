@@ -70,14 +70,14 @@ pipeline:
 | s2 | 2241 → 885 | 5542 → 1508 |
 | s3 | 1818 → 962 | 833 → 381 |
 | s4 | 5022 → 2550 | 2561 → 417 |
-| Italy window, chunk 4096 | 2790 → 2678 | 543 → 647 † |
+| Italy window, chunk 4096 | 2790 → 2303 | 543 → 391 |
 | Italy window, chunk 8192 | 5053 → 7337 | 22240 → 569 |
-| full Italy | 3575 → 4261 | 27914 → 34239 † |
+| full Italy | 3575 → 3953 | 27914 → 25615 |
 
-† Numbers of the suite v2 run (changes 12–16), where level 0 was read twice; change 17 removes
-the second read (645 → 389 GETs on the local window) and has not yet been re-measured on full
-Italy. The baseline's low RSS at chunk 8192 is the flip side of its 22 240 GETs: it reads small
-pieces per output tile.
+The baseline's low RSS at chunk 8192 is the flip side of its 22 240 GETs: it reads small pieces
+per output tile. The full-Italy wall times are from suite v2 on a quiet machine; the current code
+(suite v3, change 17) reads level 0 once, which is where its GET count comes from, and was
+re-measured under load with identical output.
 
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
