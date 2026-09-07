@@ -43,7 +43,8 @@ the level. Blocks without a valid pixel are skipped, which makes sparse rasters 
 
 Baseline is the original `zarr_pyramid_v3` module, run on the same inputs, machine (24 cores,
 43 GB) and MinIO with the same settings (chunk 4096 unless stated, tile 256, sharding, 8 threads).
-Full tables, methods and the per-change history are in `bench/results.md` and `CHANGES.md`.
+Full tables, methods and the per-change history are in `bench/results.md` and `CHANGES.md`;
+the profile that motivated changes 12–17 is `bench/profile.md`.
 
 | input | baseline | optimized, 8 worker processes | speed-up |
 |---|---:|---:|---:|

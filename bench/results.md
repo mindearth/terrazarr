@@ -198,6 +198,9 @@ Store traffic (chunk GETs/PUTs, tasks, objects) is identical to the MinIO runs f
 
 ## Profile of the optimized pipeline (local 32768² Italy window)
 
+Summary; the full report with the frame table, the GIL recording, the kernel micro-benchmark and
+what each finding turned into is `bench/profile.md`.
+
 `py-spy record` over `run_one.py --impl optimized`, chunk 4096, 8 threads, input and output on
 local NVMe (`bench/data/italy/input/WSF3Dv3_Italy_win32k.zarr`). Wall 47 s at 279 % CPU of the
 800 % available; level-0 copy ≈ 18 s, level 1 ≈ 20 s, levels 2–7 ≈ 7.5 s.
