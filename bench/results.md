@@ -453,5 +453,18 @@ the fill value), which is the whole read cost of the zarr input in requests.
   of that RSS.
 - The two 701 s / 498 s first attempts of the `w8` pair are what a shared machine and a busy
   MinIO do to an 8-minute run; they are kept in the table as a measure of that noise.
-- The striped source at full scale is the case the extract was written for and is measured
-  separately below.
+- The striped source at full scale, threaded on MinIO with `GDAL_CACHEMAX=12288` so that a
+  block-row of one-row strips (4096 × 200599 × 8 B = 6.6 GB) stays cached (21:51–21:14, idle
+  machine):
+
+  | store | input | layout | wall [s] | CPU | peak RSS [MB] | dask tasks |
+  |---|---|---|---:|---:|---:|---:|
+  | MinIO | striped | t8 | 1397.9 (23.3 min) | 517 % | 17 706 | 5705 |
+
+  It works, at 27 % more wall time than the COG or zarr input in the same layout, four times
+  the memory and 2.3× the CPU, which is strips decoded more than once when the 8 threads
+  straddle two block-rows. It is also within 3 % of extract plus zarr run (259 s + 1097 s),
+  so reading the striped file directly saves nothing over the extract and leaves no chunked
+  copy behind. With worker processes it is not an option: each process would need its own
+  6.6 GB cache. The first attempt of this run failed after 184 s in the harness's
+  output-listing step, a 3-minute MinIO timeout unrelated to the input.
