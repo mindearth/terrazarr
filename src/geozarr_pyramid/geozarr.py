@@ -1643,16 +1643,14 @@ def write_dataset_band_by_band_with_validation(
                 consolidate_metadata(store, path=fused_level[0])
                 print(f"    ✅ Successfully wrote fused level {fused_level[0]}")
         except Exception as e:
-            print(f"    ⚠️ Batch write failed: {e}; re-validating per variable")
+            print(f"    ⚠️ Batch write failed: {e}; rewriting every variable of the batch")
             if fused_level is not None:
                 _delete_prefix(store, fused_level[0])
-            reloaded = _load_existing_dataset(store, group_path, spatial_chunk)
-            written = [
-                v
-                for v in to_write
-                if reloaded is not None
-                and utils.validate_existing_band_data(reloaded, v, ds)
-            ]
+            # A batch that failed part-way leaves arrays with metadata and some shards. A
+            # missing shard reads as the fill value and shards that are all fill value are
+            # never stored, so the store cannot tell a partial write from a complete one:
+            # every variable of the batch is written again.
+            written = []
             for var in [v for v in to_write if v not in written]:
                 success = False
                 for attempt in range(max_retries):

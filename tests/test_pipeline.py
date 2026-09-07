@@ -157,3 +157,36 @@ def test_pipeline_float_nan_nodata_and_compressor_none(tmp_path, dask_client):
     l1 = _open_level(out, 1)["data"].values
     np.testing.assert_allclose(l1, utils.reduce_block(l0, 2, 2, "mean", out_dtype="float32"), rtol=1e-6)
     assert np.isnan(l1[-1, -1]), "NaN block stays NaN"
+
+
+def test_fused_batch_failure_rebuilds_level0_and_level1(tmp_path, dask_client, monkeypatch, capsys):
+    """One write-and-reduce task fails while the other shards land: the partial level 1 is
+    removed, level 0 is written again in full, level 1 is rebuilt from the store, and every
+    level equals the iterated kernel. Judged by values: a missing shard reads as the fill
+    value and all-nodata shards are never stored, so shard counts prove nothing."""
+    monkeypatch.setattr(geozarr, "FUSE_LEVEL_1", True)
+    orig = geozarr._write_and_reduce
+
+    def flaky(block, arr, *args, block_info=None, **kwargs):
+        # dask passes block_info only to functions that name it; the task is pickled to the
+        # worker, so the failure is keyed on the block rather than on a shared counter
+        if block_info is not None and tuple(block_info[0]["chunk-location"]) == (1, 1):
+            raise RuntimeError("injected shard failure")
+        return orig(block, arr, *args, block_info=block_info, **kwargs)
+
+    monkeypatch.setattr(geozarr, "_write_and_reduce", flaky)
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
+    src = xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values
+    assert src[64:128, 64:128].any(), "the failing shard must hold data, or a hole is invisible"
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    log = capsys.readouterr().out
+    assert "injected shard failure" in log, "the injected failure never ran"
+    assert "rewriting every variable of the batch" in log
+    store = get_zarr_store(out)
+    nlevels = len(zarr.open_group(store, mode="r").attrs["multiscales"]["layout"])
+    assert nlevels == 4
+    l0 = _open_level(out, 0)["data"].values
+    np.testing.assert_array_equal(l0, src)
+    for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
+        np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref)

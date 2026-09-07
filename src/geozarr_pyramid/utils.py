@@ -303,10 +303,12 @@ def validate_existing_band_data(
 
 def all_chunks_written(store, path: str) -> bool:
     """
-    Strict completeness check: every chunk (or shard) of the array at *path* exists.
+    Every chunk (or shard) of the array at *path* exists in the store.
 
-    Costs one listing of the array's chunk keys; on sharded stores that is one
-    key per shard.
+    Costs one listing of the array's chunk keys; on sharded stores that is one key per
+    shard. True proves the array complete; False does not prove it incomplete, because
+    zarr does not store chunks that equal the fill value (``write_empty_chunks`` is off),
+    so a sparse raster never reaches the full count.
     """
     import zarr
 
