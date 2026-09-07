@@ -39,6 +39,51 @@ reduced from the same blocks in one pass; every further level is built one task 
 shard, reading its parent shards from the store one at a time, so task memory does not grow with
 the level. Blocks without a valid pixel are skipped, which makes sparse rasters cheap.
 
+## Results
+
+Baseline is the original `zarr_pyramid_v3` module, run on the same inputs, machine (24 cores,
+43 GB) and MinIO with the same settings (chunk 4096 unless stated, tile 256, sharding, 8 threads).
+Full tables, methods and the per-change history are in `bench/results.md` and `CHANGES.md`.
+
+| input | baseline | optimized, 8 worker processes | speed-up |
+|---|---:|---:|---:|
+| WSF3Dv3 Italy, 178335×200599 float64, MinIO | 1344 s | 461 s | 2.9× |
+| WSF3Dv3 Italy, local NVMe | 1287 s | 346 s | 3.7× |
+| Italy 32768² window, MinIO, chunk 4096 | 61 s | 33 s | 1.9× |
+| Italy 32768² window, MinIO, chunk 8192 | 71 s | 37 s | 1.9× |
+
+Synthetic scenarios (`bench/compare.py`, one process with 4 threads for both):
+
+| scenario | baseline | optimized | speed-up |
+|---|---:|---:|---:|
+| s1: uint8 16384², sharded, min | 14.6 s | 8.6 s | 1.7× |
+| s2: uint8 16384², unsharded, mean | 32.5 s | 10.0 s | 3.3× |
+| s3: uint8 8×8192², sharded, mean | 22.7 s | 12.6 s | 1.8× |
+| s4: float32 12288², sharded, median | 18.2 s | 16.6 s | 1.1× |
+
+Memory and store traffic, measured on single-process runs so the counters cover the whole
+pipeline:
+
+| input | peak RSS [MB], baseline → optimized | chunk GETs, baseline → optimized |
+|---|---:|---:|
+| s1 | 3815 → 909 | 1999 → 177 |
+| s2 | 2241 → 885 | 5542 → 1508 |
+| s3 | 1818 → 962 | 833 → 381 |
+| s4 | 5022 → 2550 | 2561 → 417 |
+| Italy window, chunk 4096 | 2790 → 2678 | 543 → 647 † |
+| Italy window, chunk 8192 | 5053 → 7337 | 22240 → 569 |
+| full Italy | 3575 → 4261 | 27914 → 34239 † |
+
+† Numbers of the suite v2 run (changes 12–16), where level 0 was read twice; change 17 removes
+the second read (645 → 389 GETs on the local window) and has not yet been re-measured on full
+Italy. The baseline's low RSS at chunk 8192 is the flip side of its 22 240 GETs: it reads small
+pieces per output tile.
+
+Output: identical to the baseline at every level for min, median and float means; integer means
+differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
+optimized output additionally carries a decodable CRS on every overview level and exact `2**L`
+pixel sizes, which the baseline does not (changes 9 and 11).
+
 ## Test and benchmark
 
 Local, synthetic inputs:
