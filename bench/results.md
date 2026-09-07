@@ -358,3 +358,100 @@ and `w8` layouts) with change 17, on 2026-09-07 07:21–08:21 at commit `f849095
   pair): max |diff| 0 everywhere, the first time levels 0 and 1 of full Italy were checked
   exhaustively rather than on sampled blocks. Pixel sizes agree except the baseline's known
   level-9 drift (0.046087° against the exact 0.045994°, change 9).
+
+## Input formats: striped GeoTIFF, COG and zarr
+
+The extract step (`tif_to_zarr.py`) exists because the source `WSF3Dv3_Italy.tif` is a striped
+GeoTIFF: 178335×200599 float64, deflate, one row per strip, no overviews, 1.88 GB. This section
+feeds the pyramid the same data in three formats without an extract:
+
+- **striped**: the source layout, cut with `gdal_translate -srcwin` for the window (one-row
+  strips kept: `-co TILED=NO -co BLOCKYSIZE=1`), read through rasterio/GDAL;
+- **cog**: `gdal_translate -of COG` with `BLOCKSIZE=512`, `COMPRESS=DEFLATE`, `SPARSE_OK=TRUE`,
+  `RESAMPLING=AVERAGE` overviews (window: 218 MB, 20 s to build), read through rasterio/GDAL;
+- **zarr**: the 2048²-chunked, unsharded zarr v3 store the extract produces, read through zarr.
+
+`run_one.py` opens a GeoTIFF with rioxarray in `--chunk-size` blocks and `lock=False` (one GDAL
+handle per dask thread), locally or through `/vsis3/` on MinIO (`bench/run_inputs_win32k.sh`,
+`bench/run_inputs_full.sh`). Store counters cover the output only for GeoTIFF inputs. Same
+pyramid settings as everywhere else: chunk 4096, tile 256, mean, nodata 0, sharding, 8 threads
+(`t8`) or 8 single-threaded worker processes (`w8`).
+
+### 32768² window (2026-09-07 13:56–14:03, quiet machine)
+
+| store | input | layout | wall [s] | CPU | peak RSS [MB] | dask tasks |
+|---|---|---|---:|---:|---:|---:|
+| local | striped | t8 | 29.1 | 367 % | 10509 † | 204 |
+| local | striped | w8 | 19.0 | 1023 % | 1600 | 204 |
+| local | cog | t8 | 27.1 | 307 % | 10287 † (3257 with the default cache) | 204 |
+| local | cog | w8 | 16.3 | 1026 % | 1559 | 204 |
+| local | zarr | t8 | 31.6 | 280 % | 2338 | 140 |
+| local | zarr | w8 | 18.3 | 996 % | 553 | 140 |
+| MinIO | striped | t8 | 39.8 | 281 % | 10763 † | 204 |
+| MinIO | striped | w8 | 40.7 | 579 % | 1693 | 204 |
+| MinIO | cog | t8 | 40.1 | 222 % | 10368 † | 204 |
+| MinIO | cog | w8 | 32.2 | 587 % | 1530 | 204 |
+| MinIO | zarr | t8 | 45.1 | 210 % | 2514 | 140 |
+| MinIO | zarr | w8 | 35.8 | 585 % | 590 | 140 |
+
+† GeoTIFF `t8` runs were given `GDAL_CACHEMAX=8192` (MB) so that a block-row of strips stays
+cached; the RSS is that allowance being used, not a need. The COG rerun with GDAL's default
+cache (5 % of RAM) peaks at 3.3 GB, in line with the zarr input. `w8` runs had 1 GB per process.
+Peak RSS of `w8` rows is the main process only.
+
+- Outputs from the COG input equal the baseline window at all 8 levels (`compare_outputs.py`,
+  both layouts).
+- The COG is the fastest input on both stores, by 5–15 % over zarr; the striped file is not
+  slow at this size. A window strip is 32768 × 8 B = 262 KB and a block-row of 4096 strips is
+  1 GB, which fits the cache, so the strips are decoded about once per block-row per process.
+  With 8 processes on MinIO that redundancy shows: `w8` is no faster than `t8` for the striped
+  file (40.7 s against 39.8 s) while the COG gains 20 % and zarr 21 %.
+- Why the COG beats the 2048-chunked zarr here: `SPARSE_OK` leaves all-zero tiles unwritten
+  and GDAL answers them without I/O or decode; 1806 of the window's 4096 full-resolution tiles
+  (44 %) are such tiles (`bench/tiff_tiles.py`). The zarr input stores all 256 of its chunks,
+  because its fill value is NaN and zeros are data, so every 2048² block is fetched and
+  blosc-decoded before the nodata fast path can skip it. Full-width strips are what the
+  extract was written to avoid, and they only cost at full scale, where a block-row is 6.6 GB
+  (next table).
+
+### Full WSF3Dv3 Italy (2026-09-07 14:16–15:45)
+
+Full COG: `gdal_translate -of COG` from the striped source on local NVMe, 9.4 min at 355 % CPU,
+2.94 GB (source 1.88 GB, zarr input 1.87 GB), 512² tiles, 9 overviews; 54 186 of its 136 808
+full-resolution tiles (40 %) are unwritten. The striped and COG files were then uploaded to the
+MinIO input prefix next to the zarr.
+
+| store | input | layout | wall [s] | CPU | peak RSS [MB] | dask tasks | load |
+|---|---|---|---:|---:|---:|---:|---|
+| MinIO | cog | t8 | 1103.7 (18.4 min) | 222 % | 6101 | 5705 | quiet |
+| MinIO | zarr | t8 | 1096.6 (18.3 min) | 221 % | 4249 | 3549 | shared † |
+| MinIO | cog | w8 | 498.3, rerun 507.1 | 983 % | 1855 | 5705 | shared †, rerun quiet |
+| MinIO | zarr | w8 | 701.5, rerun 431.7 | 755 % / 1111 % | 748 | 3549 | shared †, rerun quiet |
+| local | cog | w8 | 386.6 | 1327 % | 1764 | 5705 | shared † |
+| local | zarr | w8 | 384.7 | 1358 % | 711 | 3549 | shared † |
+
+† From 14:31 another session's notebook kernel held five cores (load average 24–32 on 24 cores,
+29 GB used); the `w8` MinIO pair was rerun back to back at 15:29–15:45 on a quiet machine
+(load 4–13). Wall times are `/usr/bin/time` of the whole process; `peak RSS` of `w8` rows is the
+main process. Store counters cover the output only for GeoTIFF inputs: the threaded COG row counts
+16 983 chunk GETs, all parent-shard reads for levels 2–9, and the threaded zarr row's 25 615 is
+that plus the 8 624 level-0 chunk requests (5 234 stored chunks and 3 390 misses that return
+the fill value), which is the whole read cost of the zarr input in requests.
+
+- At full scale the input format does not decide the wall time. Threaded, COG and zarr land
+  within 1 % of each other (1104 s against 1097 s), because one process is bound by zarr's
+  event loop on the output side whatever feeds it. With 8 processes the clean pair is
+  507 s (COG) against 432 s (zarr) on MinIO and 387 s against 385 s locally: zarr is equal or
+  up to 15 % faster. The 20 % COG advantage of the window does not carry over: the window's
+  full-width strips and its 44 % sparse tiles favoured GDAL, whereas on full Italy each
+  4096² block is 64 tile reads (8 merged range requests) through GDAL against two 2048² chunk
+  fetches through obstore, and the zarr input also skips its unwritten chunks (5234 of 8624
+  stored: the NaN sea outside the raster is not on disk).
+- The COG input costs more memory and tasks: 6.1 GB against 4.2 GB threaded, 1.9 GB against
+  0.7 GB per worker, and 5705 tasks against 3549 (rioxarray adds an open-and-read layer per
+  block). The GDAL block cache (`GDAL_CACHEMAX`, 2 GB threaded, 1 GB per worker here) is part
+  of that RSS.
+- The two 701 s / 498 s first attempts of the `w8` pair are what a shared machine and a busy
+  MinIO do to an 8-minute run; they are kept in the table as a measure of that noise.
+- The striped source at full scale is the case the extract was written for and is measured
+  separately below.

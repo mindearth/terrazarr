@@ -76,7 +76,10 @@ pipeline:
 | full Italy | 3575 → 3953 | 27914 → 25615 |
 
 The baseline's low RSS at chunk 8192 is the flip side of its 22 240 GETs: it reads small pieces
-per output tile. The full-Italy wall times are from suite v2 on a quiet machine; the current code
+per output tile. The pipeline also reads GeoTIFF inputs directly: on full Italy a COG (512² tiles)
+and the 2048-chunked zarr give the same wall time within 15 % in every layout, and at window size
+the COG is 5–15 % faster; the striped source is only viable through the extract
+(`bench/results.md`, "Input formats"). The full-Italy wall times are from suite v2 on a quiet machine; the current code
 (suite v3, change 17) reads level 0 once, which is where its GET count comes from, and was
 re-measured under load with identical output.
 

@@ -1,6 +1,9 @@
 """
 Run one implementation (baseline or optimized) on an input store and print JSON metrics.
 
+The input is a zarr store (local or s3://) or a GeoTIFF (striped or COG, local or s3://,
+read through rasterio; store counters then cover the output only).
+
 Runs in-process (threaded dask workers) so store traffic and peak RSS of the
 whole pipeline are captured by one process. Launch one process per run.
 """
@@ -45,6 +48,45 @@ def remove_output(path: str) -> None:
     import shutil
 
     shutil.rmtree(path, ignore_errors=True)
+
+
+def gdal_env() -> None:
+    """GDAL settings for reading GeoTIFF inputs, local or on MinIO through /vsis3/.
+
+    Set before the dask client starts so worker processes inherit them.
+    """
+    ep = os.environ.get("AWS_ENDPOINT_URL")
+    if ep:
+        os.environ.setdefault("AWS_S3_ENDPOINT", ep.split("://", 1)[-1])
+        os.environ.setdefault("AWS_HTTPS", "YES" if ep.startswith("https") else "NO")
+        os.environ.setdefault("AWS_VIRTUAL_HOSTING", "FALSE")
+    os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+    os.environ.setdefault("GDAL_HTTP_MERGE_CONSECUTIVE_RANGES", "YES")
+    os.environ.setdefault("GDAL_HTTP_MULTIRANGE", "YES")
+    os.environ.setdefault("CPL_VSIL_CURL_CHUNK_SIZE", str(16 * 1024 * 1024))
+    os.environ.setdefault("CPL_VSIL_CURL_CACHE_SIZE", str(512 * 1024 * 1024))
+
+
+def open_geotiff(path: str, chunk_size: int):
+    """A GeoTIFF (striped or COG, local or s3://) as the same dataset the zarr input gives:
+    one variable ``data`` on (y, x) in ``chunk_size`` dask blocks, CRS on ``spatial_ref``.
+
+    ``lock=False`` gives every dask thread its own GDAL handle, so tile decodes run in
+    parallel; GDAL's block cache (``GDAL_CACHEMAX``, MB) is what makes a striped file
+    bearable, since every block of a block-row needs the same full-width strips.
+    """
+    import rioxarray
+
+    if path.startswith("s3://"):
+        path = "/vsis3/" + path[len("s3://"):]
+    da_ = rioxarray.open_rasterio(
+        path, chunks={"band": 1, "y": chunk_size, "x": chunk_size}, lock=False, masked=False,
+    )
+    da_ = da_.squeeze("band", drop=True)
+    ds = da_.to_dataset(name="data")
+    ds["data"].attrs.pop("_FillValue", None)
+    ds["data"].encoding.pop("_FillValue", None)
+    return ds
 
 
 def instrument_stores(counters: Counter) -> None:
@@ -111,6 +153,7 @@ def main() -> None:
 
     counters: Counter = Counter()
     instrument_stores(counters)
+    gdal_env()
 
     if args.workers > 1:
         client = Client(processes=True, n_workers=args.workers, threads_per_worker=max(1, args.threads // args.workers), dashboard_address=":0", silence_logs=50)
@@ -121,10 +164,13 @@ def main() -> None:
         sys.stdout = open(os.devnull, "w")
     remove_output(args.output)
 
-    ds = xr.open_dataset(
-        get_zarr_store(args.input), engine="zarr",
-        chunks={"y": args.chunk_size, "x": args.chunk_size}, consolidated=False,
-    )
+    if args.input.lower().endswith((".tif", ".tiff")):
+        ds = open_geotiff(args.input, args.chunk_size)
+    else:
+        ds = xr.open_dataset(
+            get_zarr_store(args.input), engine="zarr",
+            chunks={"y": args.chunk_size, "x": args.chunk_size}, consolidated=False,
+        )
     ds = set_spatial_info(ds)
     dt = xr.DataTree(ds)
 
