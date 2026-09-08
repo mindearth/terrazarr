@@ -9,3 +9,5 @@ bench/data/
 .pytest_cache/
 .venv-baseline/
 .venv-ft/
+.venv-eopf/
+.venv-topozarr/
