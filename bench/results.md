@@ -555,7 +555,7 @@ comparisons against `italy_full_baseline.zarr` cover every level in full.
 | writer | wall [s] | CPU | peak RSS [MB] | objects | size | overview values vs baseline |
 |---|---:|---:|---:|---:|---:|---|
 | ours, w8 | 367.2 (6.1 min) | 1401 % | 717 (main) | 2178 | 2.6 GB | identical at all 10 levels |
-| gdal | 699.9 (11.7 min) | container | 9044 (container) | 430602 | 3.8 GB | levels one pixel larger, see below |
+| gdal | 699.9 (11.7 min) | container | 9044 (container) | 430602 | 3.8 GB | levels one pixel larger; on the overlap 0.9 % of level-1 pixels differ (max 147), 19.5 % at level 9 |
 | topozarr | 1087.4 (18.1 min) | 338 % | 1276 | 41361 | 2.3 GB | zeros averaged in: 0.5 % of level-1 pixels differ (max 128), 18.5 % at level 9 |
 
 - **ours** is 1.9× faster than GDAL and 3.0× faster than topozarr at a fraction of the
@@ -571,5 +571,8 @@ comparisons against `italy_full_baseline.zarr` cover every level in full.
   sizes at every level (89168×100300 against 89167×100299), because the generic overview
   builder rounds up where this module, the baseline, topozarr and GDAL's own COG driver (see
   "Input formats": the COG built with 3.8.4 has 100299×89167) round down. Pixel size is
-  stretched accordingly, the drift change 9 removed. Values on the overlapping region: see
-  the cropped comparison below.
+  stretched accordingly, the drift change 9 removed. On the top-left overlap
+  (`compare_any.py --crop 1`, `bench/out/tools_full_gdal_compare_crop.log`) 0.93 % of the
+  level-1 pixels differ from the baseline, against 0.53 % for topozarr on the same raster:
+  both average nodata zeros in, and GDAL's 1.99998 resampling ratio adds a growing
+  misregistration on top, up to 19.5 % of the pixels at level 9.

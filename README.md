@@ -123,8 +123,9 @@ Only this module applies the nodata rule (mean of valid pixels, block blanked be
 valid); the other three average nodata zeros in and so differ from the baseline on 1.5 % of
 level-1 pixels. eopf holds each whole level in memory and cannot run on full Italy. On full
 Italy (10 levels, local NVMe): this module 367 s with 8 processes and 2178 objects, GDAL 700 s
-and 430 602 objects (unsharded) with overviews one pixel larger than the trimmed sizes,
-topozarr 1087 s and 41 361 objects.
+and 430 602 objects (unsharded) with overviews one pixel larger than the trimmed sizes and
+0.9 % of level-1 pixels differing on the overlap, topozarr 1087 s and 41 361 objects with
+0.5 % differing.
 
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
