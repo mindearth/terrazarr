@@ -76,12 +76,24 @@ pipeline:
 | full Italy | 3575 → 3953 | 27914 → 25615 |
 
 The baseline's low RSS at chunk 8192 is the flip side of its 22 240 GETs: it reads small pieces
-per output tile. The pipeline also reads GeoTIFF inputs directly: on full Italy a COG (512² tiles)
-and the 2048-chunked zarr give the same wall time within 15 % in every layout, and at window size
-the COG is 5–15 % faster; the striped source read directly costs as much as the extract plus
-a zarr run, at four times the memory (`bench/results.md`, "Input formats"). The full-Italy wall times are from suite v2 on a quiet machine; the current code
+per output tile. The full-Italy wall times are from suite v2 on a quiet machine; the current code
 (suite v3, change 17) reads level 0 once, which is where its GET count comes from, and was
 re-measured under load with identical output.
+
+Input formats. The pipeline reads GeoTIFFs directly (rioxarray, one GDAL handle per thread,
+`/vsis3/` on MinIO), so the same raster was fed in as the striped source (one-row strips), as a
+COG (512² tiles, `gdal_translate -of COG`, 40 % of its tiles sparse) and as the 2048-chunked zarr
+the extract writes; optimized module, same settings, MinIO (`bench/results.md`, "Input formats"):
+
+| input | 32k window, 8 threads | 32k window, 8 processes | full Italy, 8 threads | full Italy, 8 processes |
+|---|---:|---:|---:|---:|
+| striped GeoTIFF | 40 s | 41 s | 1398 s (12 GB GDAL cache, 17.7 GB RSS) | not viable |
+| COG | 40 s | 32 s | 1104 s | 507 s |
+| zarr | 45 s | 36 s | 1097 s | 432 s |
+
+At full scale the chunked formats are equivalent (zarr equal or up to 15 % faster, COG at 1.5–2.5×
+the memory); the window's COG edge comes from its 44 % sparse tiles. Reading the striped source
+directly costs as much as the extract plus a zarr run, so the extract stays.
 
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
@@ -96,6 +108,9 @@ Local, synthetic inputs:
 .venv/bin/python -m pytest -q
 .venv/bin/python bench/compare.py              # writes bench/out/results.md
 TAG=_v2 bash bench/run_suite.sh                # every benchmark of bench/results.md (about an hour)
+bash bench/run_inputs_win32k.sh                # striped GeoTIFF vs COG vs zarr input, 32k window (10 min)
+bash bench/run_inputs_full.sh                  # same on full Italy (about 2 hours)
+.venv/bin/python bench/tiff_tiles.py x.tif     # tiles per level of a (Big)TIFF and how many are sparse
 .venv/bin/python bench/compare.py --only s1    # one scenario
 .venv/bin/python bench/compare_outputs.py A.zarr B.zarr   # two pyramids level by level, one shard at a time
 ```
