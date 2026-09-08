@@ -466,5 +466,7 @@ the fill value), which is the whole read cost of the zarr input in requests.
   straddle two block-rows. It is also within 3 % of extract plus zarr run (259 s + 1097 s),
   so reading the striped file directly saves nothing over the extract and leaves no chunked
   copy behind. With worker processes it is not an option: each process would need its own
-  6.6 GB cache. The first attempt of this run failed after 184 s in the harness's
+  6.6 GB cache. For the record, no earlier section fed the GeoTIFF to either implementation:
+  all baseline-vs-optimized runs read the extracted zarr, and the extract (259 s, 14 GB) is a
+  separate, shared step. The first attempt of this run failed after 184 s in the harness's
   output-listing step, a 3-minute MinIO timeout unrelated to the input.

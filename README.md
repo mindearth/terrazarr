@@ -87,13 +87,17 @@ the extract writes; optimized module, same settings, MinIO (`bench/results.md`, 
 
 | input | 32k window, 8 threads | 32k window, 8 processes | full Italy, 8 threads | full Italy, 8 processes |
 |---|---:|---:|---:|---:|
-| striped GeoTIFF | 40 s | 41 s | 1398 s (12 GB GDAL cache, 17.7 GB RSS) | not viable |
+| striped GeoTIFF, read directly | 40 s | 41 s | 1398 s (12 GB GDAL cache, 17.7 GB RSS) | not viable (one strip cache per process) |
+| striped GeoTIFF via the extract (259 s) + zarr | | | 1356 s | 719 s |
 | COG | 40 s | 32 s | 1104 s | 507 s |
 | zarr | 45 s | 36 s | 1097 s | 432 s |
 
 At full scale the chunked formats are equivalent (zarr equal or up to 15 % faster, COG at 1.5–2.5×
 the memory); the window's COG edge comes from its 44 % sparse tiles. Reading the striped source
-directly costs as much as the extract plus a zarr run, so the extract stays.
+directly costs as much as the extract plus a zarr run, so the extract stays. Note that every
+baseline-vs-optimized number above is the pyramid stage alone, fed from the extracted zarr:
+end to end from the striped source the optimized pipeline is 719 s against the baseline's
+259 + 1344 = 1603 s, 2.2×.
 
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
