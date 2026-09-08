@@ -110,22 +110,33 @@ Other writers, same 32768² window, local zarr input, mean, 8 levels (`bench/too
 | GDAL 3.13.2 (`gdal_translate` + `gdaladdo`) | 38 s | 2.3 GB | 21865 | zeros averaged in |
 | eopf-geozarr 0.7.1 (upstream of the baseline) | 78 s | 18.6 GB | 68 | zeros averaged in |
 
-How they differ: this module is a lazy dask graph with one task per output shard, level 1
-computed inside the level-0 write and higher levels read back shard by shard, so task memory
-is one parent shard whatever the level, and it runs as dask threads or worker processes.
-eopf writes level 0 lazily but computes every overview from the whole previous level as one
-numpy array (`ds[var].values`), single-threaded, with one shard per level. topozarr streams
-shard-aligned regions through its own thread pool and a Rust kernel without dask, fuses level 1
-into the level-0 copy when the upper levels fit in RAM and otherwise re-reads the store, and
-picks chunk and shard sizes itself. GDAL is a block-cached single-process `gdal_translate`
-followed by one `gdaladdo` pass per overview, each from the previous one, unsharded.
-Only this module applies the nodata rule (mean of valid pixels, block blanked below 30 %
-valid); the other three average nodata zeros in and so differ from the baseline on 1.5 % of
-level-1 pixels. eopf holds each whole level in memory and cannot run on full Italy. On full
-Italy (10 levels, local NVMe): this module 367 s with 8 processes and 2178 objects, GDAL 700 s
-and 430 602 objects (unsharded) with overviews one pixel larger than the trimmed sizes and
-0.9 % of level-1 pixels differing on the overlap, topozarr 1087 s and 41 361 objects with
-0.5 % differing.
+Full Italy, 178335×200599 float64, 10 levels, local NVMe (eopf not run: it holds each whole
+level in memory, 286 GB at level 0):
+
+| writer | wall | peak RSS | objects | size | overview values |
+|---|---:|---:|---:|---:|---|
+| this module, 8 processes | 367 s | 0.7 GB main | 2178 | 2.6 GB | = baseline at all 10 levels |
+| GDAL 3.13.2 | 700 s | 9.0 GB | 430 602 | 3.8 GB | 1 px larger per level; 0.9 % of level-1 pixels differ on the overlap, 19.5 % at level 9 |
+| topozarr 0.1.8 | 1087 s | 1.3 GB | 41 361 | 2.3 GB | 0.5 % of level-1 pixels differ, 18.5 % at level 9 |
+
+How they work:
+
+| | this module | eopf-geozarr | topozarr | GDAL |
+|---|---|---|---|---|
+| execution | lazy dask graph, one task per output shard | level 0 lazy (dask); overviews eager numpy, whole level (`ds[var].values`) | own thread pool over shard-aligned regions, Rust kernel, no dask | block-cached single process |
+| level 1 | inside the level-0 write task | whole level 0 in numpy | fused into the level-0 copy when levels 1+ fit in RAM, else read back | `gdaladdo` pass over level 0 |
+| levels ≥ 2 | 4 parent shards read from the store per task | whole previous level in numpy | previous level read back from the store | each pass from the previous overview |
+| memory | one parent shard + output per task × threads | whole level × ~2 | workers × 5 × region | block cache + overview buffers |
+| parallelism | dask threads or worker processes | dask threads for level 0 only | `max_workers` threads | codec threads only |
+| nodata | mean of valid pixels, block blanked below 30 % valid | zeros averaged in | zeros averaged in, all-fill regions skipped | numeric fill value as nodata; NaN fill: zeros averaged in |
+| overview size | trimmed, pixel size exactly `2**L` × native | trimmed | trimmed | rounded up, extent stretched |
+| chunk / shard | `--tile-width` / `--chunk-size` / `--sharding` | `spatial_chunk`; one shard per level | chosen by it (512 KB chunks, ≤ 4 per shard) | `BLOCKSIZE`, no shards |
+| layout, metadata | `0`, `1`, … groups; GeoZarr multiscales + tile matrix set | `<group>/0`, `1`, …; GeoZarr 0.4 | `0`, `1`, …; zarr-conventions multiscales | root array + `ovr_2x`, …; zarr-conventions multiscales |
+| resume | per-band validation, retry, failed batch rewritten | per-band validation, retry | none | none |
+
+Only this module applies the nodata rule; the other three average nodata zeros in and so
+differ from the baseline in the same places. Details and the smoke-scale semantics probe are in
+`bench/results.md`, "Other GeoZarr pyramid writers".
 
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
