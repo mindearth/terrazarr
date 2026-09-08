@@ -110,9 +110,21 @@ Other writers, same 32768² window, local zarr input, mean, 8 levels (`bench/too
 | GDAL 3.13.2 (`gdal_translate` + `gdaladdo`) | 38 s | 2.3 GB | 21865 | zeros averaged in |
 | eopf-geozarr 0.7.1 (upstream of the baseline) | 78 s | 18.6 GB | 68 | zeros averaged in |
 
+How they differ: this module is a lazy dask graph with one task per output shard, level 1
+computed inside the level-0 write and higher levels read back shard by shard, so task memory
+is one parent shard whatever the level, and it runs as dask threads or worker processes.
+eopf writes level 0 lazily but computes every overview from the whole previous level as one
+numpy array (`ds[var].values`), single-threaded, with one shard per level. topozarr streams
+shard-aligned regions through its own thread pool and a Rust kernel without dask, fuses level 1
+into the level-0 copy when the upper levels fit in RAM and otherwise re-reads the store, and
+picks chunk and shard sizes itself. GDAL is a block-cached single-process `gdal_translate`
+followed by one `gdaladdo` pass per overview, each from the previous one, unsharded.
 Only this module applies the nodata rule (mean of valid pixels, block blanked below 30 %
 valid); the other three average nodata zeros in and so differ from the baseline on 1.5 % of
-level-1 pixels. eopf holds each whole level in memory and cannot run on full Italy.
+level-1 pixels. eopf holds each whole level in memory and cannot run on full Italy. On full
+Italy (10 levels, local NVMe): this module 367 s with 8 processes and 2178 objects, GDAL 700 s
+and 430 602 objects (unsharded) with overviews one pixel larger than the trimmed sizes,
+topozarr 1087 s and 41 361 objects.
 
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The

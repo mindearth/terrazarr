@@ -496,6 +496,29 @@ The same local zarr input through four writers (`bench/tools/`, 2026-09-08, quie
 All four write 8 levels, 32768² down to 256². Outputs are compared with the baseline window
 by `bench/tools/compare_any.py`, which pairs levels by shape whatever the group layout.
 
+### How each writer works
+
+From the sources (`src/geozarr_pyramid`, `eopf_geozarr/conversion/geozarr.py` 0.7.1,
+`topozarr/{pyramid,engine,coarsen}.py` 0.1.8, GDAL 3.13.2 Zarr driver and `gdaladdo`).
+
+| aspect | ours | eopf | topozarr | gdal |
+|---|---|---|---|---|
+| execution | lazy dask graph, one compute per level | level 0 lazy (dask `to_zarr` per band); overviews eager numpy | own thread pool over shard-aligned regions, no dask; source opened lazily | GDAL block-cached streaming, one process |
+| level 0 | one task per output shard, block read once | `to_zarr` of the dask array | region copy widened to whole source chunks, each read once | `gdal_translate` block by block, single-threaded apart from the codec |
+| level 1 | reduced inside the level-0 write task (change 17) | `ds[var].values` of level 0, numpy reshape-mean | fused into the level-0 copy when levels 1+ fit in half the RAM, else read back from the store | `gdaladdo` pass over level 0 |
+| levels ≥ 2 | one task per output shard reading its 4 parent shards from the store (≥ 16 shards), else from memory | whole previous level in numpy | regions of the previous level read back from the store, Rust `block_reduce` | each `gdaladdo` pass from the previous overview |
+| peak memory | one parent shard + output per task × threads (2.4 GB threaded, 0.6 GB per worker) | whole level × ~2 (18.6 GB on the window; 286 GB level 0 on full Italy: cannot run) | `workers × 5 × region bytes` (1.2–3.1 GB); pipelined levels held in RAM when they fit | block cache (`GDAL_CACHEMAX`) + overview buffers (2.3 GB window, 9.0 GB full) |
+| parallelism | dask threads or worker processes (`--workers`, default 8 × 1) | dask threads for level 0; overviews single-threaded | `max_workers` threads; Rust kernel releases the GIL | `GDAL_NUM_THREADS` for the codec; overview build single-threaded |
+| nodata | mean of valid pixels, block blanked below 30 % valid; NaN or numeric nodata | mean over all pixels (nodata only if passed, not exposed by `create_geozarr_dataset`) | mean over all pixels; NaN-aware fill; all-fill regions skipped | numeric zarr `fill_value` honoured as nodata, NaN fill: all pixels averaged |
+| overview size | trimmed (`floor`), pixel size exactly `2**L` × native | trimmed | trimmed | rounded up, extent stretched (1 px larger per level) |
+| integer output | rounded to nearest | float64 whatever the input | truncated | rounded |
+| chunk / shard | `--tile-width` chunk, `--chunk-size` shard, `--sharding`, `--compressor` | `spatial_chunk` chunk; shard = whole level; `tile_width` only in the tile matrix set | chosen by it: 512 KB chunks, ≤ 4 per shard, snapped to the source chunking, zstd; `recommend_encoding` | `BLOCKSIZE` chunk, no shards (classic API), `COMPRESS` |
+| level layout | groups `0`, `1`, … with `data` | `<group>/0`, `1`, … | groups `0`, `1`, … | root array + `ovr_2x`, `ovr_4x`, … groups |
+| metadata | GeoZarr multiscales + tile matrix set, `spatial:*`, `proj:*`, CRS on every level | GeoZarr 0.4 multiscales + tile matrix set | zarr-conventions multiscales, `proj:*`, `spatial:*` | zarr-conventions multiscales only |
+| resume / validation | per-band validation, retry, failed batch rewritten (change 18) | per-band validation and retry | none (`mode="w"` truncates) | none |
+| object stores | obstore (`s3://`) | fsspec | any zarr store (obstore, icechunk) | `/vsis3/` |
+| input | zarr or GeoTIFF (rioxarray) | zarr DataTree, data under a child group | xarray Dataset with an xproj CRS | anything GDAL reads |
+
 ### 32768² window
 
 | writer | wall [s] | CPU | peak RSS [MB] | objects | size | level-0 layout |
@@ -523,3 +546,30 @@ by `bench/tools/compare_any.py`, which pairs levels by shape whatever the group 
   Per-level stats: level 0 21.9 s, level 1 4.3 s, levels 2–7 4.3 s together.
 - **gdal** is single-process; `gdaladdo` runs the 7 overview passes after the translate, and
   the 21 865 unsharded objects are what a 256² chunk pyramid costs without shards.
+
+### Full WSF3Dv3 Italy (local zarr input, 2026-09-08 15:58–17:22)
+
+10 levels, 178335×200599 down to 348×391. eopf not run (whole-level numpy, see above). The
+comparisons against `italy_full_baseline.zarr` cover every level in full.
+
+| writer | wall [s] | CPU | peak RSS [MB] | objects | size | overview values vs baseline |
+|---|---:|---:|---:|---:|---:|---|
+| ours, w8 | 367.2 (6.1 min) | 1401 % | 717 (main) | 2178 | 2.6 GB | identical at all 10 levels |
+| gdal | 699.9 (11.7 min) | container | 9044 (container) | 430602 | 3.8 GB | levels one pixel larger, see below |
+| topozarr | 1087.4 (18.1 min) | 338 % | 1276 | 41361 | 2.3 GB | zeros averaged in: 0.5 % of level-1 pixels differ (max 128), 18.5 % at level 9 |
+
+- **ours** is 1.9× faster than GDAL and 3.0× faster than topozarr at a fraction of the
+  memory, with 2178 objects against 430 602 (GDAL, 256² chunks and no shards) and 41 361
+  (topozarr, 1024² shards).
+- **topozarr** per level: level 0 464 s, level 1 413 s, level 2 116 s; it skipped 3398 of
+  8624 regions per level as all-fill. Its level 1 is fused into the level-0 copy only when
+  the upper levels fit in RAM, which they do not here (95 GB), so it re-reads the store; the
+  level-1 pass then costs almost as much as the copy. At 338 % CPU on 8 workers it is bound
+  the same way this module's threaded layout is.
+- **gdal**: `gdal_translate` is single-threaded and wrote level 0 in about 8 minutes; the
+  nine `gdaladdo` passes took the rest. Its overviews are one pixel larger than the trimmed
+  sizes at every level (89168×100300 against 89167×100299), because the generic overview
+  builder rounds up where this module, the baseline, topozarr and GDAL's own COG driver (see
+  "Input formats": the COG built with 3.8.4 has 100299×89167) round down. Pixel size is
+  stretched accordingly, the drift change 9 removed. Values on the overlapping region: see
+  the cropped comparison below.

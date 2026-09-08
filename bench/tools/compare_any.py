@@ -34,20 +34,25 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("ref"); p.add_argument("other")
     p.add_argument("--var", default="data"); p.add_argument("--chunk", type=int, default=4096); p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--crop", type=int, default=0, help="also pair a level up to this many pixels larger than the reference on each axis, comparing the top-left overlap (GDAL rounds overview sizes up)")
     a = p.parse_args()
     ref = {v.shape: v for v in arrays(zarr.open_group(a.ref, mode="r", use_consolidated=False), a.var).values()}
     other = arrays(zarr.open_group(a.other, mode="r", use_consolidated=False), a.var)
     print(f"{'other array':>28} {'shape':>16} {'ref?':>5} {'max|diff|':>10} {'frac diff':>10} {'dtype':>8}")
     with dask.config.set(scheduler="threads", num_workers=a.threads):
         for name, arr in sorted(other.items(), key=lambda kv: -kv[1].shape[0]):
-            r = ref.get(arr.shape)
+            r = ref.get(arr.shape); tag = "yes"
+            if r is None and a.crop:
+                for sh, cand in ref.items():
+                    if all(0 <= o - c <= a.crop for o, c in zip(arr.shape, sh)):
+                        r = cand; tag = "crop"; break
             if r is None:
                 print(f"{name:>28} {str(arr.shape):>16} {'no':>5} {'-':>10} {'-':>10} {str(arr.dtype):>8}"); continue
-            x = da.from_array(arr, chunks=(a.chunk, a.chunk)).astype("float64")
+            x = da.from_array(arr, chunks=(a.chunk, a.chunk))[: r.shape[0], : r.shape[1]].astype("float64")
             y = da.from_array(r, chunks=(a.chunk, a.chunk)).astype("float64")
             d = da.fabs(da.nan_to_num(x) - da.nan_to_num(y))
             m, f = dask.compute(d.max(), (d > 0).mean())
-            print(f"{name:>28} {str(arr.shape):>16} {'yes':>5} {float(m):>10.3g} {float(f):>10.4f} {str(arr.dtype):>8}")
+            print(f"{name:>28} {str(arr.shape):>16} {tag:>5} {float(m):>10.3g} {float(f):>10.4f} {str(arr.dtype):>8}")
 
 
 if __name__ == "__main__":
