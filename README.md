@@ -99,6 +99,21 @@ baseline-vs-optimized number above is the pyramid stage alone, fed from the extr
 end to end from the striped source the optimized pipeline is 719 s against the baseline's
 259 + 1344 = 1603 s, 2.2×.
 
+Other writers, same 32768² window, local zarr input, mean, 8 levels (`bench/tools/`,
+`bench/results.md` "Other GeoZarr pyramid writers"):
+
+| writer | wall | peak RSS | objects | overview values |
+|---|---:|---:|---:|---|
+| this module, 8 processes | 19 s | 0.6 GB main | 148 | = baseline |
+| this module, 8 threads | 35 s | 2.4 GB | 148 | = baseline |
+| topozarr 0.1.8 | 32 s | 3.1 GB | 2108 | zeros averaged in |
+| GDAL 3.13.2 (`gdal_translate` + `gdaladdo`) | 38 s | 2.3 GB | 21865 | zeros averaged in |
+| eopf-geozarr 0.7.1 (upstream of the baseline) | 78 s | 18.6 GB | 68 | zeros averaged in |
+
+Only this module applies the nodata rule (mean of valid pixels, block blanked below 30 %
+valid); the other three average nodata zeros in and so differ from the baseline on 1.5 % of
+level-1 pixels. eopf holds each whole level in memory and cannot run on full Italy.
+
 Output: identical to the baseline at every level for min, median and float means; integer means
 differ by at most 1 per level because the baseline truncated (`CHANGES.md`, change 10). The
 optimized output additionally carries a decodable CRS on every overview level and exact `2**L`
@@ -114,6 +129,8 @@ Local, synthetic inputs:
 TAG=_v2 bash bench/run_suite.sh                # every benchmark of bench/results.md (about an hour)
 bash bench/run_inputs_win32k.sh                # striped GeoTIFF vs COG vs zarr input, 32k window (10 min)
 bash bench/run_inputs_full.sh                  # same on full Italy (about 2 hours)
+bash bench/tools/run_tools_win32k.sh           # eopf-geozarr, topozarr, GDAL 3.13 and this module on the window
+bash bench/tools/run_tools_full.sh             # topozarr, GDAL and this module on full Italy
 .venv/bin/python bench/tiff_tiles.py x.tif     # tiles per level of a (Big)TIFF and how many are sparse
 .venv/bin/python bench/compare.py --only s1    # one scenario
 .venv/bin/python bench/compare_outputs.py A.zarr B.zarr   # two pyramids level by level, one shard at a time

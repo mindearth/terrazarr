@@ -470,3 +470,56 @@ the fill value), which is the whole read cost of the zarr input in requests.
   all baseline-vs-optimized runs read the extracted zarr, and the extract (259 s, 14 GB) is a
   separate, shared step. The first attempt of this run failed after 184 s in the harness's
   output-listing step, a 3-minute MinIO timeout unrelated to the input.
+
+## Other GeoZarr pyramid writers: EOPF, topozarr, GDAL
+
+The same local zarr input through four writers (`bench/tools/`, 2026-09-08, quiet machine):
+
+- **ours**: this module, chunk 4096, tile 256, mean, nodata 0, sharding, 8 threads (`t8`) or 8
+  worker processes (`w8`);
+- **eopf**: upstream `eopf-geozarr` 0.7.1 (`bench/tools/run_eopf.py`, `.venv-eopf`), the
+  package the baseline was forked from: `create_geozarr_dataset(spatial_chunk=4096,
+  tile_width=256, min_dimension=256, enable_sharding=True)` with the data under a
+  `/measurements` group (a root-only tree writes nothing), 8 dask threads for level 0. Every
+  overview is computed from the whole previous level as one numpy array (`ds[var].values`);
+- **topozarr**: 0.1.8 on Python 3.12 (`bench/tools/run_topozarr.py`, `.venv-topozarr`):
+  `create_pyramid(levels, method="mean").write(max_workers=8)`, source opened lazily without
+  dask as its docs advise; its own thread pool, shard-aligned regions and a Rust reduce
+  kernel, chunk and shard sizes chosen by it (512 KB chunks, 4 per shard, snapped to the
+  source chunking), zstd;
+- **gdal**: GDAL 3.13.2 in the official docker image (`bench/tools/run_gdal.sh`; the system GDAL
+  is 3.8 and the small image lacks blosc): `gdal_translate -of ZARR -co FORMAT=ZARR_V3
+  -co BLOCKSIZE=256,256 -co COMPRESS=ZSTD` then `gdaladdo -r average 2 4 … 128`, which writes
+  the overviews as `ovr_2x` … groups with a zarr-conventions `multiscales` attribute.
+  `GDAL_NUM_THREADS=8`; no sharding in the classic raster API.
+
+All four write 8 levels, 32768² down to 256². Outputs are compared with the baseline window
+by `bench/tools/compare_any.py`, which pairs levels by shape whatever the group layout.
+
+### 32768² window
+
+| writer | wall [s] | CPU | peak RSS [MB] | objects | size | level-0 layout |
+|---|---:|---:|---:|---:|---:|---|
+| ours, t8 | 34.8 | 285 % | 2417 | 148 | 233 MB | 256² chunks in 4096² shards, blosc-zstd |
+| ours, w8 | 18.9 | 1109 % | 561 (main) | 148 | 233 MB | same |
+| topozarr | 31.8 | 393 % | 3122 | 2108 | 209 MB | 256² chunks in 1024² shards (128² in 512² from level 2), zstd |
+| gdal | 38.2 | container | 2290 (container) | 21865 | 264 MB | 256² chunks, no shards, zstd |
+| eopf | 78.0 | 162 % | 18551 | 68 | 273 MB | 4096² chunks in one shard per level (32768²), blosc-zstd |
+
+- **Values.** Ours equals the baseline at every level (max |diff| 0). eopf, gdal and topozarr
+  agree with each other and differ from the baseline in the same places: 1.5 % of the level-1
+  pixels, up to 128 in value, growing to 42 % of the level-7 pixels. All three average nodata
+  zeros in (the input's fill value is NaN, so 0 is data to them), while the baseline and this
+  module average valid pixels only and blank a block below 30 % valid. On a raster that is
+  98.7 % zeros that is the whole difference; none of the three can express the nodata rule
+  (`bench/tools/compare_any.py` output in `bench/out/tools_win32k.log`). At smoke scale with
+  a zarr fill value of 0, GDAL did take the fill value as nodata and matched this module to
+  within rounding, and topozarr truncated integer means where the others round.
+- **eopf** ignored `tile_width` for the chunking (4096² chunks, one shard per level) and
+  needed 18.6 GB: the whole 8.6 GB level 0 in memory plus the reduction's temporaries. It
+  cannot run on full Italy (level 0 is 286 GB).
+- **topozarr** is close to this module's threaded layout on wall time with its own pool,
+  and fuses level 1 into the level-0 copy when the upper levels fit in RAM (they do here).
+  Per-level stats: level 0 21.9 s, level 1 4.3 s, levels 2–7 4.3 s together.
+- **gdal** is single-process; `gdaladdo` runs the 7 overview passes after the translate, and
+  the 21 865 unsharded objects are what a 256² chunk pyramid costs without shards.
