@@ -90,7 +90,7 @@ def pipeline():
         params = get_current_context()["params"]
 
         cmd = [
-            "python /app/src/geozarr_pyramid/cli.py",
+            "geozarr-pyramid",
             f"--input {q(params['input'])}",
             f"--output {q(params['output'])}",
             f"--chunk-size {int(params['chunk_size'])}",
