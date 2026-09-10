@@ -25,7 +25,7 @@ DOCKER_ENV = {
     "AWS_ACCESS_KEY_ID": "{{ var.value.MINIO_ACCESS_KEY_ID }}",
     "AWS_SECRET_ACCESS_KEY": "{{ var.value.MINIO_SECRET_ACCESS_KEY }}",
     "AWS_ENDPOINT_URL": "{{ var.value.MINIO_ENDPOINT }}",
-    "AWS_REGION": "{{ var.value.AWS_REGION | default('eu-central-1') }}",
+    "AWS_REGION": "{{ var.value.ME_AWS_REGION | default('eu-central-1') }}",
 }
 
 
