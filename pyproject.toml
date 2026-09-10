@@ -16,10 +16,12 @@ dependencies = [
     "fsspec>=2024.1",
     "s3fs>=2024.1",
     "obstore>=0.5",
+    "bokeh>=3.9.2",
 ]
 
 [project.scripts]
 geozarr-pyramid = "geozarr_pyramid.cli:main"
+geozarr-pyramid-bbox = "geozarr_pyramid.clip:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "psutil>=5.9"]
@@ -34,3 +36,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+
+[[tool.uv.index]]
+url = "https://me-internal-pyhton-813732138169.d.codeartifact.eu-central-1.amazonaws.com/pypi/me-internal-python/simple/"

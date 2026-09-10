@@ -1,0 +1,12 @@
+name: Sync Airflow DAG Dev
+
+on:
+  push:
+    paths:
+      - "airflow/**"
+  workflow_dispatch:
+
+jobs:
+  ci-cd:
+    uses: mindearth/dev-ops/.github/workflows/airflow-dags-sync-dev.yml@main
+    secrets: inherit
