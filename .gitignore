@@ -11,3 +11,6 @@ bench/data/
 .venv-ft/
 .venv-eopf/
 .venv-topozarr/
+
+.venv/
+.env
