@@ -656,3 +656,34 @@ of it, and the skip cuts them to 0.13 s (≈ 18 h).
 - Until then: `--chunk-size 8192` quarters the graph (≈ 12 GB main process on agea4) and
   fits the workers; 16384 does not on 43 GB with a band-last input.
 - The read side is bound by the MinIO link; more workers would not read faster.
+
+## Windowed level 0 (changes 19–21, branch `windowed-level0`)
+
+Verification of the windowed writer on 2026-09-11 (`bench/verify_windowed.sh`, log
+`bench/out/verify_windowed.log`), with another session's notebook kernel holding 1–2 cores
+throughout (load average 6–15), so wall times are noisier than the references.
+
+| run | main | branch | note |
+|---|---:|---:|---|
+| 32768² window, 8 processes | 18.9 s (quiet) / 16.9 s (same-conditions) | 20.5 s / 16.1 s | output = baseline at 8 levels |
+| 32768² window, 8 threads | 34.8 s (quiet) | 38.7 s | |
+| full Italy, 8 processes | 367 s (quiet) / 534 s (same afternoon) | 379 s | output = baseline at all 10 levels, 5710 tasks over 4 windows |
+| 262144² × 4 bands, chunk 4096, metadata-only | 846 s, main process 0.80 GB | 352 s, **main process 0.27 GB** | 16 384 shard tasks in 16 windows |
+| 65536² × 4 bands, all nodata | 50.2 s, 3032 tasks | 20.9 s, 599 tasks | one task per four-band block, empty shards skip the codec |
+| agea4 32768² data window, MinIO | 98.7 s, 1519 tasks, 722 s worker time | 98.1 s, 622 tasks, 634 s worker time | bound by the MinIO read (5 s per 64 MB block) |
+
+- **Memory.** The main process no longer grows with the raster: 0.27 GB at 16 384 shard tasks
+  against 0.80 GB before, and the same for any larger raster since only one window
+  (32² blocks, or 32² × bands with a band-last source) is in the graph at a time. On agea4 that
+  replaces 45–55 GB with well under 1 GB.
+- **Empty shards.** 0.35 s → 0.13 s each; on the all-nodata 65536² store the run halves.
+- **Band-last.** One task per (bands, 4096, 4096) block, no dask rechunk: 5× fewer tasks on
+  the all-nodata store, 2.4× fewer on the agea4 window, where the wall time is set by MinIO.
+- **No regression on the reference cases.** Window and full Italy are within noise of main under
+  the same load (16.1 s against 16.9 s side by side on the window; 379 s against 534 s on full
+  Italy the same afternoon, 367 s on main the day before on a quiet machine). Outputs are
+  identical to the baseline at every level in both.
+- **Resume.** A run killed mid-way leaves `geozarr_pyramid:windows_done` on the level-0 group;
+  the next run finishes the missing windows and does not touch the done ones
+  (`tests/test_pipeline.py::test_window_failure_is_retried_then_resumed`). A level 0 without the
+  completion flag is never taken as complete.

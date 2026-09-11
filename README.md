@@ -32,7 +32,10 @@ shard on y/x with `--sharding`, and the dask block on y/x in every case; it must
 the tile width. Peak memory per task is about one `chunk-size²` block times a small factor
 (see `CHANGES.md`, H1), times `--threads-per-worker` per worker.
 
-Prefer several single-threaded worker processes over one multi-threaded worker: zarr assembles
+Level 0 (and level 1, reduced from the same blocks) is written in windows of `--window-shards`²
+dask blocks (default 32), one dask compute each, so the memory of the main process is bounded by
+the window and not by the raster; the level-0 group records the windows done, and a rerun on an
+interrupted store finishes the missing windows. Prefer several single-threaded worker processes over one multi-threaded worker: zarr assembles
 chunks on one asyncio event loop per process, so dask threads queue on it and one 8-thread
 process uses under three cores (`bench/results.md`, "Profile"). Level 0 is copied and level 1
 reduced from the same blocks in one pass; every further level is built one task per output
@@ -178,15 +181,15 @@ Main findings:
 - The band-last layout is handled correctly (level 0 equals the transposed input, level 1 the
   exact per-band mean); it is not the cause.
 
-What to do about it:
+What was done about it (changes 19–21, branch `windowed-level0`):
 
-1. Write level 0 in spatial windows, one compute per window, so the graph is bounded by the
-   window whatever the raster (levels 2+ already work from the store). The real fix; not yet
-   implemented.
-2. Skip the zarr write for all-nodata level-0 blocks: about 8 hours on this raster; not yet
-   implemented.
-3. Meanwhile `--chunk-size 8192`: a quarter of the tasks, about 12 GB of main process on agea4,
-   and workers that fit.
+1. Level 0 is written in spatial windows, one compute per window (`--window-shards`, default 32
+   blocks per axis), so the graph is bounded by the window whatever the raster, with per-window
+   resume markers. Levels 2+ already worked from the store.
+2. The zarr write is skipped for level-0 blocks equal to the fill value.
+3. A band-last source keeps its bands together in one task per block instead of a dask rechunk.
+
+Measured effect: see "Windowed level 0" in `bench/results.md`.
 
 ## Test and benchmark
 
