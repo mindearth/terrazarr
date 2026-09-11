@@ -159,34 +159,125 @@ def test_pipeline_float_nan_nodata_and_compressor_none(tmp_path, dask_client):
     assert np.isnan(l1[-1, -1]), "NaN block stays NaN"
 
 
-def test_fused_batch_failure_rebuilds_level0_and_level1(tmp_path, dask_client, monkeypatch, capsys):
-    """One write-and-reduce task fails while the other shards land: the partial level 1 is
-    removed, level 0 is written again in full, level 1 is rebuilt from the store, and every
-    level equals the iterated kernel. Judged by values: a missing shard reads as the fill
-    value and all-nodata shards are never stored, so shard counts prove nothing."""
+def test_window_failure_is_retried_then_resumed(tmp_path, dask_client, monkeypatch, capsys):
+    """A write-and-reduce task that fails once is retried within its window; one that fails for
+    good fails the level cleanly, and the next run resumes from the windows already done
+    without rewriting them. Judged by values: a missing shard reads as the fill value."""
     monkeypatch.setattr(geozarr, "FUSE_LEVEL_1", True)
     orig = geozarr._write_and_reduce
+    flag = tmp_path / "failed_once"   # dask pickles the task function, so the state lives in a file
 
     def flaky(block, arr, *args, block_info=None, **kwargs):
-        # dask passes block_info only to functions that name it; the task is pickled to the
-        # worker, so the failure is keyed on the block rather than on a shared counter
-        if block_info is not None and tuple(block_info[0]["chunk-location"]) == (1, 1):
+        # dask passes block_info only to functions that name it; block_info is relative to
+        # the window, the pipeline's offset kwarg makes it global
+        off = kwargs.get("offset", (0, 0))
+        origin = tuple(a + o for (a, _), o in zip(block_info[0]["array-location"], off)) if block_info else None
+        if origin == (64, 64) and not flag.exists():
+            flag.touch()
             raise RuntimeError("injected shard failure")
+        if origin == (192, 192):
+            raise RuntimeError("permanent shard failure")
         return orig(block, arr, *args, block_info=block_info, **kwargs)
 
     monkeypatch.setattr(geozarr, "_write_and_reduce", flaky)
     inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
     src = xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values
-    assert src[64:128, 64:128].any(), "the failing shard must hold data, or a hole is invisible"
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    with pytest.raises(RuntimeError, match="Failed to write all bands"):
+        _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0,
+             max_retries=2, window_shards=2)
     log = capsys.readouterr().out
-    assert "injected shard failure" in log, "the injected failure never ran"
-    assert "rewriting every variable of the batch" in log
+    assert "injected shard failure" in log and "retrying" in log, "the once-failing window was not retried"
+    assert "permanent shard failure" in log
     store = get_zarr_store(out)
+    done, complete, size = geozarr._read_window_marker(store, "0")
+    assert not complete and size == 2 and 0 < len(done) < 16, (done, complete)
+    # shards of the windows marked done (every window but (1, 1), i.e. blocks 2-3 × 2-3)
+    files = sorted(os.path.join(r, f) for r, _, fs in os.walk(os.path.join(out, "0", "data", "c")) for f in fs
+                   if f.isdigit() and not (int(os.path.basename(r)) >= 2 and int(f) >= 2))
+    assert files
+    before = {f: os.stat(f).st_mtime_ns for f in files}
+    time.sleep(0.05)
+
+    monkeypatch.setattr(geozarr, "_write_and_reduce", orig)
+    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0,
+         max_retries=1, window_shards=2)
+    assert "resuming from" in capsys.readouterr().out
+    assert geozarr._read_window_marker(store, "0")[1], "completion marker missing after the resume"
+    assert {f: os.stat(f).st_mtime_ns for f in files} == before, "windows already done were rewritten"
     nlevels = len(zarr.open_group(store, mode="r").attrs["multiscales"]["layout"])
-    assert nlevels == 4
     l0 = _open_level(out, 0)["data"].values
     np.testing.assert_array_equal(l0, src)
     for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
         np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref)
+
+
+@pytest.mark.parametrize("window_shards", [2, 4, 64])
+def test_windowed_write_equals_reference(tmp_path, dask_client, window_shards):
+    """Level 0 and the fused level 1 written in windows of 2, 4 and (one window) 64 blocks give
+    the same pyramid; a 1000² raster at chunk 64 is 16 × 16 blocks, so windows are partial at
+    the edge and level-1 regions end on the trimmed level-1 shape."""
+    inp = make_input(tmp_path / "in.zarr", shape=(1000, 1000), input_chunk=250)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0,
+         window_shards=window_shards)
+    store = get_zarr_store(out)
+    nlevels = len(zarr.open_group(store, mode="r").attrs["multiscales"]["layout"])
+    l0 = _open_level(out, 0)["data"].values
+    np.testing.assert_array_equal(l0, xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values)
+    for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
+        np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref)
+    done, complete, size = geozarr._read_window_marker(store, "0")
+    assert complete and size == window_shards and len(done) == (16 // window_shards + (16 % window_shards > 0)) ** 2
+
+
+def test_all_fill_blocks_skip_the_write(tmp_path, dask_client):
+    """A level-0 block equal to the array fill value is not written (zarr would store nothing
+    for it, but only after walking every inner chunk); a block of nodata that is not the fill
+    value is stored as before."""
+    # uint8, fill 0 == nodata 0: an all-zero 128² block leaves no shard
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
+    zarr.open_array(get_zarr_store(inp), path="data", mode="r+")[:128, :128] = 0
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, spatial_chunk=128, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r")
+    src = xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values
+    assert not src[:128, :128].any() and arr.fill_value == 0
+    assert not os.path.exists(os.path.join(out, "0", "data", "c", "0", "0")), "the all-fill shard was written"
+    assert os.path.exists(os.path.join(out, "0", "data", "c", "0", "1"))
+    np.testing.assert_array_equal(arr[:], src)
+    # float32 with NaN fill: zeros are data and every block is stored
+    inp2 = make_input(tmp_path / "in2.zarr", shape=(512, 512), input_chunk=128, dtype="float32", nodata=None)
+    zarr.open_array(get_zarr_store(inp2), path="data", mode="r+")[:128, :128] = 0.0
+    src2 = xr.open_dataset(get_zarr_store(inp2), engine="zarr", consolidated=False)["data"].values
+    out2 = str(tmp_path / "out2.zarr")
+    _run(inp2, out2, spatial_chunk=128, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    arr2 = zarr.open_array(get_zarr_store(out2), path="0/data", mode="r")
+    assert np.isnan(arr2.fill_value)
+    assert os.path.exists(os.path.join(out2, "0", "data", "c", "0", "0")), "zeros are data when the fill value is NaN"
+    np.testing.assert_array_equal(arr2[:], src2)
+
+
+def test_band_last_source_is_one_task_per_block(tmp_path, dask_client):
+    """A (y, x, band) source whose block holds every band keeps the bands together in the dask
+    block (one read, one transpose, one task writing all band shards) and gives the same
+    pyramid as the per-band reference."""
+    H = W = 512
+    rng = np.random.default_rng(0)
+    data = rng.integers(0, 255, (H, W, 3), dtype="uint8"); data[:, :200, :] = 0
+    ds = xr.Dataset({"data": (("y", "x", "band"), data)},
+                    coords={"y": 5e6 - np.arange(H) * 10.0, "x": 1e6 + np.arange(W) * 10.0, "band": np.arange(3)})
+    ds = ds.rio.write_crs("EPSG:3857")
+    inp = str(tmp_path / "bl.zarr")
+    ds.to_zarr(inp, mode="w", zarr_format=3, consolidated=False, encoding={"data": {"chunks": (128, 128, 3)}})
+    enc = {"chunks": (1, 64, 64), "shards": (1, 128, 128)}
+    src = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": 128, "x": 128}, consolidated=False)["data"].transpose("band", "y", "x")
+    assert geozarr._dask_chunks_for(enc, src.dims, 128, src.data.chunks) == {"band": 3, "y": 128, "x": 128}
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, spatial_chunk=128, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r")
+    assert arr.shape == (3, H, W) and arr.shards == (1, 128, 128)
+    ref0 = np.moveaxis(data, -1, 0)
+    np.testing.assert_array_equal(arr[:], ref0)
+    l1 = _open_level(out, 1)["data"].values
+    np.testing.assert_array_equal(l1, utils.reduce_block(ref0, 2, 2, "mean", nodata_value=0, out_dtype="uint8"))

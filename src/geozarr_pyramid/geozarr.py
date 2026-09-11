@@ -83,6 +83,18 @@ FUSE_LEVEL_1 = os.environ.get("GEOZARR_PYRAMID_FUSE_LEVEL_1", "1") != "0"
 """Reduce level 1 from the level-0 blocks in the same compute as the level-0 write."""
 
 MIN_BLOCKS_FROM_STORE = int(os.environ.get("GEOZARR_PYRAMID_MIN_BLOCKS_FROM_STORE", "16"))
+# Level 0 (and the fused level 1) is written in windows of this many dask blocks per axis, one
+# dask compute each, so the graph held by the client and scheduler is bounded by the window and
+# not by the raster (about 40 KB per block task). Must be even so that a window of level-0 shards
+# reduces onto whole level-1 shards.
+WINDOW_SHARDS = int(os.environ.get("GEOZARR_PYRAMID_WINDOW_SHARDS", "32"))
+# A non-spatial dim (bands, time) of at most this many slices that the source holds in a single
+# block is kept whole in the dask block: one read, one transpose and one task write all slices,
+# instead of a dask rechunk that splits the block slice by slice.
+MAX_LEAD_PER_TASK = int(os.environ.get("GEOZARR_PYRAMID_MAX_LEAD_PER_TASK", "16"))
+# Level-0 group attributes that record the windows written and the completion of the level.
+WINDOWS_DONE_ATTR = "geozarr_pyramid:windows_done"
+LEVEL_COMPLETE_ATTR = "geozarr_pyramid:level0_complete"
 """Below this many output shards, an overview is reduced from the in-memory parent blocks
 (one task per parent shard) rather than one task per output shard, to keep parallelism."""
 
@@ -127,19 +139,32 @@ def _delete_prefix(store: StoreLike, path: str) -> None:
 
 
 def _dask_chunks_for(
-    enc: Mapping[str, Any], dims: Sequence[Hashable], spatial_chunk: int
+    enc: Mapping[str, Any],
+    dims: Sequence[Hashable],
+    spatial_chunk: int,
+    source_chunks: Sequence[Sequence[int]] | None = None,
 ) -> dict[Hashable, int]:
     """
     Dask block for a variable, derived from its zarr encoding.
 
     Sharded: one block per shard, which zarr needs to write a shard in a single put
     instead of a read-modify-write. Unsharded: spatial_chunk on y/x (a multiple of the
-    zarr chunk, so no rechunk is needed to align) and one slice on any other dim.
+    zarr chunk, so no rechunk is needed to align). A non-spatial dim is one slice per
+    block, unless ``source_chunks`` shows the source holds all its slices (at most
+    ``MAX_LEAD_PER_TASK``) in one block, e.g. a band-last (y, x, band) image: then the
+    block keeps them, so the source block is read and transposed once and one task
+    writes every slice, instead of dask splitting it slice by slice.
     """
     shards = enc.get("shards")
     if shards:
-        return dict(zip(dims, shards))
-    return {d: (spatial_chunk if d in SPATIAL_DIMS else 1) for d in dims}
+        out = dict(zip(dims, shards))
+    else:
+        out = {d: (spatial_chunk if d in SPATIAL_DIMS else 1) for d in dims}
+    if source_chunks is not None:
+        for d, c in zip(dims, source_chunks):
+            if d not in SPATIAL_DIMS and len(c) == 1 and c[0] <= MAX_LEAD_PER_TASK:
+                out[d] = c[0]
+    return out
 
 
 def _pin_grid_mapping(ds: xr.Dataset) -> xr.Dataset:
@@ -244,6 +269,31 @@ def _read_reduce_block(
     return out
 
 
+def _all_fill(block: np.ndarray, fill_value: Any) -> bool:
+    """True if every element of ``block`` equals the array's fill value (NaN-aware)."""
+    if fill_value is None:
+        return False
+    if isinstance(fill_value, float) and np.isnan(fill_value):
+        return bool(np.isnan(block).all())
+    return bool((block == fill_value).all())
+
+
+def _block_slices(block_info: Any, offset: Sequence[int]) -> tuple[slice, ...]:
+    """Slices of a map_blocks block in the target array, shifted by the window ``offset``."""
+    loc = block_info[0]["array-location"]
+    return tuple(slice(a + o, b + o) for (a, b), o in zip(loc, offset))
+
+
+def _write_block(
+    block: np.ndarray, arr: zarr.Array, offset: Sequence[int], block_info: Any = None
+) -> np.ndarray:
+    """Write one level-0 block; an all-fill block is skipped (zarr would store nothing)."""
+    block = np.ascontiguousarray(block)
+    if not _all_fill(block, arr.fill_value):
+        arr[_block_slices(block_info, offset)] = block
+    return np.ones((1,) * block.ndim, dtype=bool)
+
+
 def _write_and_reduce(
     block: np.ndarray,
     arr: zarr.Array,
@@ -252,11 +302,19 @@ def _write_and_reduce(
     method: str,
     nodata_value: float | None,
     out_dtype: Any,
+    offset: Sequence[int] = (),
     block_info: Any = None,
 ) -> np.ndarray:
-    """Write one level-0 shard and return its reduction for level 1: one read per block."""
-    loc = block_info[0]["array-location"]
-    arr[tuple(slice(a, b) for a, b in loc)] = block
+    """
+    Write one level-0 block and return its reduction for level 1: one read per block.
+
+    The block is made contiguous once (a band-last source arrives as a strided transpose),
+    and an all-fill block skips the zarr write altogether: zarr stores nothing for it but
+    would still walk every inner chunk of the shard to find that out.
+    """
+    block = np.ascontiguousarray(block)
+    if not _all_fill(block, arr.fill_value):
+        arr[_block_slices(block_info, offset)] = block
     return utils.reduce_block(block, fy, fx, method, nodata_value, out_dtype)
 
 
@@ -268,13 +326,17 @@ def _fused_write_reduce_array(
     target_width: int,
     method: str,
     nodata_value: float | None,
+    offset: Sequence[int] | None = None,
+    arr: zarr.Array | None = None,
 ) -> da.Array:
     """
     Lazy level-1 array whose tasks also write the level-0 blocks of ``data`` to the array
     already created at ``array_path``. Dask fuses a block read into its first consumer, so
     two consumers of the input would read it twice; this keeps one read per block.
+    ``data`` may be a window of the level-0 array starting at ``offset``.
     """
-    arr = zarr.open_array(store, path=array_path, mode="r+", zarr_format=3)
+    if arr is None:
+        arr = zarr.open_array(store, path=array_path, mode="r+", zarr_format=3)
     src_h, src_w = data.shape[-2:]
     fy, fx = src_h // target_height, src_w // target_width
     out_chunks = (
@@ -291,12 +353,55 @@ def _fused_write_reduce_array(
         method=method,
         nodata_value=nodata_value,
         out_dtype=data.dtype,
+        offset=tuple(offset) if offset is not None else (0,) * data.ndim,
         dtype=data.dtype,
         chunks=out_chunks,
+        meta=np.empty((0,) * data.ndim, dtype=data.dtype),
     )
     if out.shape[-2] != target_height or out.shape[-1] != target_width:
         out = out[..., :target_height, :target_width]
     return out
+
+
+def _level0_windows(
+    chunks_y: Sequence[int], chunks_x: Sequence[int], window_shards: int
+) -> list[tuple[tuple[int, int], slice, slice]]:
+    """
+    Windows of at most ``window_shards`` dask blocks per axis over a block grid:
+    ``((wy, wx), y_slice, x_slice)`` in pixel coordinates, row-major.
+    """
+    oy = np.concatenate([[0], np.cumsum(chunks_y)])
+    ox = np.concatenate([[0], np.cumsum(chunks_x)])
+    out = []
+    for wy, i0 in enumerate(range(0, len(chunks_y), window_shards)):
+        i1 = min(i0 + window_shards, len(chunks_y))
+        for wx, j0 in enumerate(range(0, len(chunks_x), window_shards)):
+            j1 = min(j0 + window_shards, len(chunks_x))
+            out.append(((wy, wx), slice(int(oy[i0]), int(oy[i1])), slice(int(ox[j0]), int(ox[j1]))))
+    return out
+
+
+def _read_window_marker(store: StoreLike, group_path: str) -> tuple[set[tuple[int, int]], bool, int | None]:
+    """Windows already written to the level-0 group, its completion flag and the window size used."""
+    try:
+        attrs = zarr.open_group(store, path=_group_or_none(group_path), mode="r", use_consolidated=False).attrs
+        done = {tuple(w) for w in attrs.get(WINDOWS_DONE_ATTR, {}).get("windows", [])}
+        size = attrs.get(WINDOWS_DONE_ATTR, {}).get("window_shards")
+        return done, bool(attrs.get(LEVEL_COMPLETE_ATTR, False)), size
+    except Exception:
+        return set(), False, None
+
+
+def _write_window_marker(
+    store: StoreLike, group_path: str, done: set[tuple[int, int]], window_shards: int, complete: bool
+) -> None:
+    g = zarr.open_group(store, path=_group_or_none(group_path), mode="r+", use_consolidated=False)
+    g.attrs.update(
+        {
+            WINDOWS_DONE_ATTR: {"window_shards": window_shards, "windows": sorted(list(w) for w in done)},
+            LEVEL_COMPLETE_ATTR: complete,
+        }
+    )
 
 
 def _overview_arrays_from_store(
@@ -363,6 +468,7 @@ def create_geozarr_dataset(
     s3_profile: str | None = None,
     store: StoreLike | None = None,
     compressor: Any = DEFAULT_COMPRESSOR,
+    window_shards: int | None = None,
 ) -> xr.DataTree:
     """
     Create a GeoZarr-spec 0.4 compliant dataset from EOPF data.
@@ -443,6 +549,7 @@ def create_geozarr_dataset(
         enable_sharding,
         method=method,
         nodata_value=nodata_value,
+        window_shards=window_shards,
     )
 
     # Consolidate metadata at the root level AFTER all groups are written
@@ -536,6 +643,7 @@ def iterative_copy(
     enable_sharding: bool = False,
     method: str = "mean",
     nodata_value: float | None = None,
+    window_shards: int | None = None,
 ) -> xr.DataTree:
     """
     Iteratively copy groups from original DataTree to GeoZarr DataTree.
@@ -576,6 +684,7 @@ def iterative_copy(
         enable_sharding=enable_sharding,
         method=method,
         nodata_value=nodata_value,
+        window_shards=window_shards,
     )
 
     # Process all groups in the tree using iterative approach
@@ -707,6 +816,7 @@ def write_geozarr_group(
     enable_sharding: bool = False,
     method: str = "mean",
     nodata_value: float | None = None,
+    window_shards: int | None = None,
 ) -> xr.DataTree:
     """
     Write a group to a GeoZarr dataset with multiscales support.
@@ -752,7 +862,9 @@ def write_geozarr_group(
     for var in _data_vars_to_check:
         if isinstance(ds[var].data, da.Array):
             ds[var] = ds[var].chunk(
-                _dask_chunks_for(encoding.get(var, {}), ds[var].dims, spatial_chunk)
+                _dask_chunks_for(
+                    encoding.get(var, {}), ds[var].dims, spatial_chunk, ds[var].data.chunks
+                )
             )
 
     geometry = _pyramid_geometry(ds, group_name, min_dimension, tile_width, None)
@@ -761,9 +873,11 @@ def write_geozarr_group(
     level0_path = _join_path(group_path, 0)
     existing_native_dataset = _load_existing_dataset(store, level0_path, spatial_chunk)
 
-    if _is_level_complete(
-        existing_native_dataset, _data_vars_to_check
-    ) and _is_level_valid(existing_native_dataset):
+    if (
+        _is_level_complete(existing_native_dataset, _data_vars_to_check)
+        and _is_level_valid(existing_native_dataset)
+        and _read_window_marker(store, level0_path)[1]
+    ):
         print(
             f"Level 0 already exists and is complete at {level0_path}, "
             "loading from store and skipping write..."
@@ -774,12 +888,11 @@ def write_geozarr_group(
         # largest level is read and decoded once instead of twice.
         fused_level = None
         if FUSE_LEVEL_1 and geometry is not None and len(geometry.overview_levels) > 1:
+            # Level 0 is incomplete, so a level 1 left by an interrupted run is only as
+            # complete as level 0's windows: the windowed writer keeps its regions of the
+            # windows done and writes the rest, whatever the group looks like.
             level1_path = _join_path(group_path, 1)
-            existing_l1 = _load_existing_dataset(store, level1_path, spatial_chunk)
-            if not (
-                _is_level_complete(existing_l1, _data_vars_to_check)
-                and _is_level_valid(existing_l1)
-            ):
+            if True:
                 l1 = geometry.overview_levels[1]
                 l1_h, l1_w = int(l1["height"]), int(l1["width"])
                 g = geometry
@@ -822,6 +935,7 @@ def write_geozarr_group(
             spatial_chunk,
             False,
             fused_level=fused_level,
+            window_shards=window_shards,
         )
         if not success:
             raise RuntimeError(f"Failed to write all bands for {group_name}")
@@ -1489,6 +1603,105 @@ def create_overview_dataset_all_vars(
     return overview_ds
 
 
+def _write_level0_windows(
+    ds: xr.Dataset,
+    store: StoreLike,
+    group_path: str,
+    variables: Sequence[Hashable],
+    fused_level: tuple[str, dict[str, Any], Any] | None,
+    window_shards: int,
+    max_retries: int,
+    done: set[tuple[int, int]],
+) -> None:
+    """
+    Write the dask-backed level-0 variables (arrays already created at ``group_path``) in
+    windows of ``window_shards``² blocks, one dask compute per window and all variables
+    together; with ``fused_level`` every task also reduces its block and the window
+    stores the reduction into the level-1 array (created here from the builder), in
+    shard-aligned regions. Windows in ``done`` are skipped; each finished window is
+    added to the marker attributes, the completion flag last.
+    """
+    arrays = {v: zarr.open_array(store, path=_join_path(group_path, str(v)), mode="r+", zarr_format=3) for v in variables}
+    l1_arrays: dict[Hashable, zarr.Array] = {}
+    fy = fx = 1
+    l1_h = l1_w = 0
+    method = nodata_value = None
+    if fused_level is not None:
+        fused_path, spec, builder = fused_level
+        l1_h, l1_w, method, nodata_value = spec["height"], spec["width"], spec["method"], spec["nodata_value"]
+        # Level-1 metadata and coordinates: the builder needs lazy arrays of the right
+        # shape; the delayed chunk writes it returns are dropped, the windows do them.
+        lazy = {
+            v: _fused_write_reduce_array(ds[v].data, store, _join_path(group_path, str(v)), l1_h, l1_w, method, nodata_value, arr=arrays[v])
+            for v in variables
+        }
+        fused_path, fused_ds, fused_enc = builder(lazy)
+        # On resume the level-1 arrays of the interrupted run hold the regions of the
+        # windows done and are kept as they are (xarray's append mode would recreate
+        # them). If any is missing the level is rebuilt from scratch: every window again.
+        l1_present = done and all(_node_exists(store, _join_path(fused_path, str(v))) for v in variables)
+        if not l1_present:
+            if done:
+                print("  Level-1 arrays of the interrupted run are incomplete: rewriting every window")
+                done.clear()
+            fused_ds.to_zarr(
+                store,
+                group=fused_path,
+                mode="w",
+                consolidated=False,
+                zarr_format=3,
+                encoding=fused_enc,
+                align_chunks=not any((e or {}).get("shards") for e in fused_enc.values()),
+                compute=False,
+            )
+        l1_arrays = {v: zarr.open_array(store, path=_join_path(fused_path, str(v)), mode="r+", zarr_format=3) for v in variables}
+        first = ds[variables[0]].data
+        fy, fx = first.shape[-2] // l1_h, first.shape[-1] // l1_w
+        print(f"  Fusing overview level {fused_path} into the level-0 windows")
+
+    first = ds[variables[0]].data
+    windows = _level0_windows(first.chunks[-2], first.chunks[-1], window_shards)
+    todo = [w for w in windows if w[0] not in done]
+    print(f"  Writing level 0 in {len(windows)} windows of {window_shards}² blocks ({len(todo)} to do, {len(done)} done)")
+    for n, (key, ys, xs) in enumerate(todo, 1):
+        delayed = []
+        for v in variables:
+            data = ds[v].data
+            win = data[..., ys, xs]
+            offset = (0,) * (data.ndim - 2) + (ys.start, xs.start)
+            if fused_level is None:
+                delayed.append(
+                    da.map_blocks(
+                        _write_block, win, arr=arrays[v], offset=offset, dtype=bool,
+                        chunks=tuple((1,) * len(c) for c in win.chunks), meta=np.empty((0,) * win.ndim, dtype=bool),
+                    )
+                )
+                continue
+            h1 = min((ys.stop - ys.start) // fy, l1_h - ys.start // fy)
+            w1 = min((xs.stop - xs.start) // fx, l1_w - xs.start // fx)
+            red = _fused_write_reduce_array(win, store, "", h1, w1, method, nodata_value, offset=offset, arr=arrays[v])
+            l1 = l1_arrays[v]
+            unit = (l1.shards or l1.chunks)[-2:]
+            if any(c % u for c, u in zip(red.chunksize[-2:], unit)):
+                red = red.rechunk({red.ndim - 2: unit[0], red.ndim - 1: unit[1]})
+            region = (slice(None),) * (data.ndim - 2) + (slice(ys.start // fy, ys.start // fy + h1), slice(xs.start // fx, xs.start // fx + w1))
+            delayed.append(da.store(red, l1, regions=region, lock=False, compute=False))
+        for attempt in range(max_retries):
+            try:
+                dask.compute(*delayed)
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"    ⚠️  Window {key} attempt {attempt + 1} failed: {e}; retrying")
+                    time.sleep(2)
+                else:
+                    raise RuntimeError(f"window {key} failed after {max_retries} attempts: {e}") from e
+        done.add(key)
+        _write_window_marker(store, group_path, done, window_shards, complete=len(done) == len(windows))
+        if n % 10 == 0 or n == len(todo):
+            print(f"    window {n}/{len(todo)} done")
+
+
 def write_dataset_band_by_band_with_validation(
     ds: xr.Dataset,
     existing_dataset: xr.Dataset | None,
@@ -1499,13 +1712,17 @@ def write_dataset_band_by_band_with_validation(
     spatial_chunk: int = 4096,
     force_overwrite: bool = False,
     fused_level: tuple[str, dict[str, Any], Any] | None = None,
+    window_shards: int | None = None,
 ) -> tuple[bool, xr.Dataset]:
     """
     Write dataset band by band with individual band validation.
 
-    Bands that already exist and validate are skipped. All remaining bands are written
-    in a single dask compute; if that batch fails, each band that did not land is
-    retried individually with cleanup between attempts.
+    Bands that already exist and validate are skipped when the level carries the
+    completion marker. Otherwise the remaining bands are written in windows of
+    ``window_shards``² dask blocks, one dask compute per window and all bands together,
+    so the graph is bounded by the window whatever the size of the raster. Every window
+    is retried up to ``max_retries`` times; the windows done are recorded in the group's
+    attributes, and a level whose marker lists some windows resumes from the missing ones.
 
     Parameters
     ----------
@@ -1526,10 +1743,12 @@ def write_dataset_band_by_band_with_validation(
     force_overwrite : bool, default False
         Force overwrite existing bands even if they're valid
     fused_level : (path, spec, builder), optional
-        Level 1, written in the same compute as the bands: every band task writes its
-        level-0 block and returns the reduced block, and ``builder(arrays)`` turns those
-        lazy arrays into ``(path, dataset, encoding)`` for the level-1 write. On failure
-        the partial level is removed so the pyramid rebuilds it from the store.
+        Level 1, written in the same computes as the bands: every band task writes its
+        level-0 block and returns the reduced block, which the window then stores into
+        the level-1 array; ``builder(arrays)`` turns lazy reduced arrays into
+        ``(path, dataset, encoding)``, used once to create the level-1 metadata.
+    window_shards : int, optional
+        Dask blocks per axis and per window (default ``WINDOW_SHARDS``, even).
 
     Returns
     -------
@@ -1550,14 +1769,30 @@ def write_dataset_band_by_band_with_validation(
     to_write: list[Hashable] = []
 
     store_exists = existing_dataset is not None and len(existing_dataset.data_vars) > 0
+    if window_shards is None:
+        window_shards = WINDOW_SHARDS
+    if window_shards < 2 or window_shards % 2:
+        raise ValueError(f"window_shards must be even and >= 2, got {window_shards}")
+
+    done, complete, done_size = _read_window_marker(store, group_path)
+    resume = bool(done) and not complete and done_size == window_shards and not force_overwrite
+    if not resume:
+        done = set()
+    resumed_vars: list[Hashable] = []   # arrays kept from the interrupted run: metadata exists
 
     for var in data_vars:
         if not force_overwrite and store_exists:
             if utils.validate_existing_band_data(existing_dataset, var, ds):
-                ds[var] = existing_dataset[var]  # type: ignore[index]
-                print(f"  ✅ Band {var} already exists and is valid, skipping")
-                skipped_vars.append(var)
-                continue
+                if complete:
+                    ds[var] = existing_dataset[var]  # type: ignore[index]
+                    print(f"  ✅ Band {var} already exists and is valid, skipping")
+                    skipped_vars.append(var)
+                    continue
+                if resume:
+                    print(f"  ⏩ Band {var} exists, level 0 incomplete: resuming from {len(done)} windows done")
+                    to_write.append(var)
+                    resumed_vars.append(var)
+                    continue
             if var in existing_dataset:  # type: ignore[operator]
                 print(f"    🧹 Removing invalid existing variable {var}...")
                 _delete_prefix(store, _join_path(group_path, str(var)))
@@ -1576,8 +1811,9 @@ def write_dataset_band_by_band_with_validation(
                 if coord in encoding:
                     var_encoding[coord] = encoding[coord]
         var_enc = encoding.get(var, {})
+        source_chunks = ds[var].data.chunks if isinstance(ds[var].data, da.Array) else None
         single_var_ds[var] = single_var_ds[var].chunk(
-            _dask_chunks_for(var_enc, single_var_ds[var].dims, spatial_chunk)
+            _dask_chunks_for(var_enc, single_var_ds[var].dims, spatial_chunk, source_chunks)
         )
         # Drop on-disk chunk hints inherited from the source; keep the CRS reference.
         single_var_ds[var].encoding = {k: v for k, v in enc.items() if k == "grid_mapping"}
@@ -1595,84 +1831,30 @@ def write_dataset_band_by_band_with_validation(
 
     written: list[Hashable] = []
     if to_write:
-        print(f"  Writing {len(to_write)} data variable(s) in one compute: {to_write}")
+        lazy_vars = [v for v in to_write if isinstance(ds[v].data, da.Array)]
+        eager_vars = [v for v in to_write if v not in lazy_vars]
         try:
             # Metadata (and numpy coordinates) are written eagerly by each call; the
-            # chunk writes of every variable are computed together.
-            delayed = []
-            fused_arrays: dict[Hashable, da.Array] = {}
+            # chunk writes are done window by window below.
             for i, var in enumerate(to_write):
-                d = _write_var(var, compute=False, with_coords=(i == 0 and not coords_on_store))
+                if var in resumed_vars and var in lazy_vars:
+                    continue
+                _write_var(var, compute=(var in eager_vars), with_coords=(i == 0 and not coords_on_store))
                 coords_on_store = True
-                if fused_level is not None and isinstance(ds[var].data, da.Array):
-                    # metadata is on the store; the block writes come from the fused task
-                    spec = fused_level[1]
-                    fused_arrays[var] = _fused_write_reduce_array(
-                        ds[var].data,
-                        store,
-                        _join_path(group_path, str(var)),
-                        spec["height"],
-                        spec["width"],
-                        spec["method"],
-                        spec["nodata_value"],
-                    )
-                else:
-                    delayed.append(d)
-            if fused_level is not None:
-                fused_path, fused_ds, fused_enc = fused_level[2](fused_arrays)
-                print(f"  Fusing overview level {fused_path} into the level-0 compute")
-                delayed.append(
-                    fused_ds.to_zarr(
-                        store,
-                        group=fused_path,
-                        mode="w",
-                        consolidated=False,
-                        zarr_format=3,
-                        encoding=fused_enc,
-                        align_chunks=not any(
-                            (e or {}).get("shards") for e in fused_enc.values()
-                        ),
-                        compute=False,
-                    )
+            written.extend(eager_vars)
+            if lazy_vars:
+                _write_level0_windows(
+                    ds, store, group_path, lazy_vars, fused_level, window_shards, max_retries, done
                 )
-            dask.compute(*delayed)
-            written = list(to_write)
+                written.extend(lazy_vars)
             for var in written:
                 print(f"    ✅ Successfully wrote {var}")
-            if fused_level is not None:
+            if fused_level is not None and lazy_vars:
                 consolidate_metadata(store, path=fused_level[0])
                 print(f"    ✅ Successfully wrote fused level {fused_level[0]}")
         except Exception as e:
-            print(f"    ⚠️ Batch write failed: {e}; rewriting every variable of the batch")
-            if fused_level is not None:
-                _delete_prefix(store, fused_level[0])
-            # A batch that failed part-way leaves arrays with metadata and some shards. A
-            # missing shard reads as the fill value and shards that are all fill value are
-            # never stored, so the store cannot tell a partial write from a complete one:
-            # every variable of the batch is written again.
-            written = []
-            for var in [v for v in to_write if v not in written]:
-                success = False
-                for attempt in range(max_retries):
-                    _delete_prefix(store, _join_path(group_path, str(var)))
-                    try:
-                        _write_var(var, compute=True, with_coords=False)
-                        print(f"    ✅ Successfully wrote {var} (attempt {attempt + 1})")
-                        written.append(var)
-                        success = True
-                        break
-                    except Exception as e2:
-                        if attempt < max_retries - 1:
-                            print(
-                                f"    ⚠️  Attempt {attempt + 1} failed for {var}: {e2}, retrying in 2 seconds..."
-                            )
-                            time.sleep(2)
-                        else:
-                            print(
-                                f"    ❌ Failed to write {var} after {max_retries} attempts: {e2}"
-                            )
-                if not success:
-                    failed_vars.append(var)
+            print(f"    ❌ Level-0 write failed: {e}")
+            failed_vars = [v for v in to_write if v not in written]
 
     successful_vars = skipped_vars + written
 

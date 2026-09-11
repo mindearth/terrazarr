@@ -87,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Threads per Dask worker; task memory is workers × threads × chunk-size² × itemsize × 2",
     )
     parser.add_argument("--memory-limit", default="auto", help='Memory limit per worker, e.g. "12GB"')
+    parser.add_argument(
+        "--window-shards", type=int, default=None,
+        help="Level 0 is written in windows of this many blocks per axis, one dask compute each "
+        "(default 32, even): the graph in the main process is bounded by the window, about "
+        "40 KB per block task, instead of growing with the raster",
+    )
     return parser
 
 
@@ -122,6 +128,7 @@ def main(argv: list[str] | None = None) -> None:
             nodata_value=args.nodata,
             s3_profile=args.s3_profile,
             compressor=make_compressor(args.compressor, args.clevel),
+            window_shards=args.window_shards,
         )
     finally:
         client.close()
