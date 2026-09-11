@@ -145,13 +145,48 @@ pixel sizes, which the baseline does not (changes 9 and 11).
 
 ### Scaling limits
 
-Memory of the main process grows with the number of level-0 shard tasks, about 36–45 KB per
-task (the dask graph and scheduler state), independent of the pixel count: a 2.26 M × 2.19 M
-four-band raster at chunk 4096 is 1.18 M tasks and 45–55 GB before any data is read. Until
-level 0 is written in windows, keep the shard count of `bands × (H / chunk) × (W / chunk)`
-in the low hundreds of thousands, e.g. `--chunk-size 8192` on such an input. Worker memory
-scales with the block instead, `chunk² × bands × itemsize × ~4` per worker for a band-last
-input. Details and the measured law in `bench/results.md`, "Scaling".
+Measured on a 20 cm orthophoto of Italy (`s3://test/agea4.zarr`: 2 263 040 × 2 191 360 × 4 bands
+uint8, band-last, 1.18 TB stored in 5 500 of 47 294 source shards), on which the CLI with 8
+worker processes reached 70 GB and took the machine down (`bench/results.md`, "Scaling").
+
+Main findings:
+
+- **The memory is the dask graph, not the data.** Level 0 (with the fused level 1) is one dask
+  graph; the client and scheduler that hold it live in the main process and need **36–45 KB
+  per level-0 shard task**, on top of 0.15 GB. It is linear in the number of tasks and
+  independent of the pixel count. The reproduction on the real store went from 0.5 GB to a
+  29 GB peak in 19 minutes of graph construction, workers flat at 1.1 GB, before any pixel
+  was read.
+
+  | level-0 shard tasks | main process peak | example |
+  |---:|---:|---|
+  | 1 024 | 0.22 GB | 65536² × 4 bands at chunk 4096 |
+  | 16 384 | 0.80 GB | 262144² × 4 bands at chunk 4096 |
+  | 65 536 | 2.56 GB | 524288² × 4 bands at chunk 4096 |
+  | 1 180 000 | 45–55 GB (extrapolated, 29 GB measured before stopping) | agea4 at chunk 4096 |
+
+- **Worker memory scales with the block, not the raster:** about `4 × chunk² × bands × itemsize`
+  per worker for a band-last input. Chunk 8192 fits 8 workers on 43 GB (7 GB in total); chunk
+  16384 does not (28 GB, the batch write fails).
+- **An empty shard is not free.** 0.35 s of worker time each, spent in zarr's sharding codec
+  walking 256 inner chunks to store nothing; skipping the write for all-nodata blocks (they
+  are never stored anyway) measures 0.13 s. On a raster whose shards are 88 % empty that is
+  half the run.
+- **A data shard-band costs 2.8 s** at 8 workers, of which 6.1 s per four-band block is the read
+  from MinIO; the link delivers 110 MB/s at any concurrency, so 1.18 TB is a 3-hour floor and
+  more workers would not read faster. Projected end to end at chunk 4096: about 26 hours.
+- The band-last layout is handled correctly (level 0 equals the transposed input, level 1 the
+  exact per-band mean); it is not the cause.
+
+What to do about it:
+
+1. Write level 0 in spatial windows, one compute per window, so the graph is bounded by the
+   window whatever the raster (levels 2+ already work from the store). The real fix; not yet
+   implemented.
+2. Skip the zarr write for all-nodata level-0 blocks: about 8 hours on this raster; not yet
+   implemented.
+3. Meanwhile `--chunk-size 8192`: a quarter of the tasks, about 12 GB of main process on agea4,
+   and workers that fit.
 
 ## Test and benchmark
 
