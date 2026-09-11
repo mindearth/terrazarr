@@ -576,3 +576,83 @@ comparisons against `italy_full_baseline.zarr` cover every level in full.
   level-1 pixels differ from the baseline, against 0.53 % for topozarr on the same raster:
   both average nodata zeros in, and GDAL's 1.99998 resampling ratio adds a growing
   misregistration on top, up to 19.5 % of the pixels at level 9.
+
+## Scaling: memory and time against raster size (the agea4 case)
+
+`s3://test/agea4.zarr` is a 20 cm orthophoto of Italy: array `z18` of shape (2263040, 2191360, 4)
+uint8, dims (y, x, band), chunks (2048, 2048, 4) in (10240, 10240, 4) shards, 19.8 TB
+uncompressed; 5 500 of its 47 294 shards are stored (1.18 TB, median 232 MB), the rest is
+sea. The CLI with 8 worker processes reached 70 GB on it and took the box down. Measured on
+2026-09-11 (`bench/scaling.py`, `bench/memory_trace.py`, `bench/task_breakdown.py`,
+`bench/s3_window.py`; raw numbers in `bench/out/scaling.jsonl`, `scaling_chunk.jsonl`,
+`agea4_memory_trace.log`).
+
+### The band-last layout is not the problem
+
+A 4096² synthetic (y, x, band) input through `run_one.py` gives level 0 equal to the
+transposed input and level 1 equal to the per-band mean of valid pixels, bit for bit. The
+pipeline transposes to (band, y, x) and writes one shard per band.
+
+### Memory: the dask graph in the main process
+
+The whole level-0 write (plus the fused level 1) is one dask graph. Its size in the client and
+scheduler, which live in the main process, is what grows. On metadata-only stores of the agea4
+layout (no chunk stored, every block is nodata, so nothing but the graph costs anything):
+
+| raster | chunk | level-0 shard tasks (4 bands) | tasks executed | main process peak | workers peak (8) | wall |
+|---:|---:|---:|---:|---:|---:|---:|
+| 16384² | 4096 | 64 | 229 | 0.16 GB | 2.1 GB | 6 s |
+| 32768² | 4096 | 256 | 855 | 0.17 GB | 2.3 GB | 13 s |
+| 65536² | 4096 | 1 024 | 3 032 | 0.22 GB | 2.4 GB | 50 s |
+| 131072² | 4096 | 4 096 | 11 737 | 0.36 GB | 2.6 GB | 198 s |
+| 262144² | 4096 | 16 384 | 46 554 | 0.80 GB | 3.0 GB | 846 s |
+| 524288² | 4096 | 65 536 | > 100 000 | 2.56 GB | 4.0 GB | 3 056 s |
+| 262144² | 8192 | 4 096 | 11 743 | 0.35 GB | 6.9 GB | 718 s |
+| 262144² | 16384 | 1 024 | 5 210 | 0.23 GB | 28.2 GB | failed † |
+
+**Main-process memory ≈ 0.15 GB + 36–45 KB per level-0 shard task**, linear from 64 to
+65 536 tasks and independent of the pixel count (262144² at chunk 8192 costs what 131072² at
+chunk 4096 costs). agea4 at chunk 4096 is 553 × 535 × 4 = 1.18 M tasks: 45–55 GB before a
+pixel is read. The reproduction on the real store (`memory_trace.py`, 30 GB cap) showed
+exactly that: the main process went from 0.5 GB to a 29 GB peak in 19 minutes of graph
+construction with the 8 workers flat at 1.1 GB, dask reported a 1.53 GiB serialized graph
+(72× the 21 MiB of the 16 384-task run), and the run was stopped. The workers' memory scales
+with the block instead: `workers × (base + k × chunk² × bands × itemsize)`.
+
+† At chunk 16384 the band-last read is a 1 GB (16384, 16384, 4) block per task before the
+transpose and the four band splits; the worker tree peaked at 28 GB against an automatic
+limit of 5.4 GB per worker, the batch write failed and so did the per-band retry (the run
+was logged at the quiet level, so the nanny's own messages are not in the file). 8192 is
+the largest chunk that fits 8 workers of this input on 43 GB.
+
+### Time: a fixed cost per shard, and the link
+
+`task_breakdown.py` on the 65536² all-nodata store: the pipeline's own task costs 0.1 ms per
+shard, the time is in dask's `rechunk` tasks at 249 ms each (1 300 for 256 input blocks): the
+(4096, 4096, 4) block is transposed and split into four band blocks, each of which then goes
+through zarr's sharding codec on write. zarr itself reads a missing block in 25–31 ms; the
+write of an all-fill shard costs 162 ms at tile 256 (256 inner chunks), 69 ms at tile 512 and
+1024, 80 ms unsharded, against 1.6 ms for the `any()` that proves it empty. Skipping the zarr
+write for all-nodata blocks (they are never stored anyway) brings the all-nodata run from
+50.2 s to 21.1 s, i.e. **0.35 s → 0.13 s per empty shard**.
+
+On real data (`s3_window.py`, a data-dense 32768² window of agea4, 8 workers): 98.7 s wall,
+2.8 s of worker time per shard-band, of which the block read from MinIO is 6.1 s per
+(4096, 4096, 4) block. MinIO delivers 107–112 MB/s to this box at 1, 8 or 16 streams, so the
+1.18 TB of stored data alone is a 3-hour floor.
+
+Projection for agea4 at chunk 4096, 8 workers, if the memory held: ~137 k data shard-bands
+× 2.8 s + ~1.05 M empty × 0.35 s ≈ 750 k worker-seconds ≈ 26 h; the empty shards are half
+of it, and the skip cuts them to 0.13 s (≈ 18 h).
+
+### What follows
+
+- The memory law is a consequence of one graph per level. Writing level 0 in spatial windows
+  (one compute per window of, say, 64 × 64 shards) bounds the graph at the window's size
+  whatever the raster and keeps the per-window resume granularity; levels 2+ already work
+  from the store. Not implemented.
+- Skip the zarr write for all-nodata level-0 blocks (three lines in `_write_and_reduce`),
+  worth ~8 h on this raster. Not implemented.
+- Until then: `--chunk-size 8192` quarters the graph (≈ 12 GB main process on agea4) and
+  fits the workers; 16384 does not on 43 GB with a band-last input.
+- The read side is bound by the MinIO link; more workers would not read faster.

@@ -143,6 +143,16 @@ differ by at most 1 per level because the baseline truncated (`CHANGES.md`, chan
 optimized output additionally carries a decodable CRS on every overview level and exact `2**L`
 pixel sizes, which the baseline does not (changes 9 and 11).
 
+### Scaling limits
+
+Memory of the main process grows with the number of level-0 shard tasks, about 36–45 KB per
+task (the dask graph and scheduler state), independent of the pixel count: a 2.26 M × 2.19 M
+four-band raster at chunk 4096 is 1.18 M tasks and 45–55 GB before any data is read. Until
+level 0 is written in windows, keep the shard count of `bands × (H / chunk) × (W / chunk)`
+in the low hundreds of thousands, e.g. `--chunk-size 8192` on such an input. Worker memory
+scales with the block instead, `chunk² × bands × itemsize × ~4` per worker for a band-last
+input. Details and the measured law in `bench/results.md`, "Scaling".
+
 ## Test and benchmark
 
 Local, synthetic inputs:
@@ -155,6 +165,8 @@ bash bench/run_inputs_win32k.sh                # striped GeoTIFF vs COG vs zarr 
 bash bench/run_inputs_full.sh                  # same on full Italy (about 2 hours)
 bash bench/tools/run_tools_win32k.sh           # eopf-geozarr, topozarr, GDAL 3.13 and this module on the window
 bash bench/tools/run_tools_full.sh             # topozarr, GDAL and this module on full Italy
+.venv/bin/python bench/scaling.py --sizes 16384,32768,65536   # main/worker memory vs shard count on metadata-only inputs
+.venv/bin/python bench/task_breakdown.py 65536 bench/data/scaling  # per-task compute time from the task stream
 .venv/bin/python bench/tiff_tiles.py x.tif     # tiles per level of a (Big)TIFF and how many are sparse
 .venv/bin/python bench/compare.py --only s1    # one scenario
 .venv/bin/python bench/compare_outputs.py A.zarr B.zarr   # two pyramids level by level, one shard at a time
