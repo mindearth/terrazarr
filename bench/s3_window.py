@@ -6,11 +6,19 @@ per-task timings from the task stream.
 The window origin defaults to the data-dense area found by listing agea4's stored shards
 (bench/out/agea4_shards.json); pass y0 x0 to choose another.
 """
-import sys, os, time, collections, shutil
+import collections
+import os
+import shutil
+import sys
+import time
+
 import xarray as xr
+import zarr
 from dask.distributed import Client, get_task_stream
+
 from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
 from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+
 if __name__ == "__main__":
     n = int(sys.argv[1]); out = sys.argv[2]
     y0, x0 = (int(sys.argv[3]), int(sys.argv[4])) if len(sys.argv) > 4 else (10240, 1085440)
@@ -36,7 +44,7 @@ if __name__ == "__main__":
             if ss["action"] == "transfer": per[name][2] += ss["stop"] - ss["start"]
         per[name][0] += 1
     tot = sum(v[1] for v in per.values()); shards = 4 * (n // 4096) ** 2
-    import zarr; g = zarr.open_group(out, mode="r", use_consolidated=False); l0 = g["0"]["z18"]
+    g = zarr.open_group(out, mode="r", use_consolidated=False); l0 = g["0"]["z18"]
     size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(out) for f in fs)
     print(f"window {n}² {comp}-{clevel}: shards(all bands)={shards} tasks={len(ts.data)} wall={wall:.1f}s worker compute={tot:.1f}s ({tot/shards*1000:.0f} ms per shard) objects={sum(len(f) for _,_,f in os.walk(out))} bytes={size/1e6:.0f} MB l0 shards stored={l0.nchunks_initialized}")
     for name, (c, comp, tr) in sorted(per.items(), key=lambda kv: -kv[1][1])[:8]:

@@ -6,11 +6,18 @@
 Run it detached with a memory cap, e.g. systemd-run --user --unit x -p MemoryMax=30G ..., and stop
 it once the curve is clear: on agea4 the main process reaches 29 GB in 19 min of graph construction.
 """
-import os, sys, time, threading, subprocess
+import os
+import subprocess
+import sys
+import threading
+import time
+
 import xarray as xr
+
+from geozarr_pyramid.cli import get_dask_client
 from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
 from geozarr_pyramid.store import get_zarr_store, set_spatial_info
-from geozarr_pyramid.cli import get_dask_client
+
 OUT = sys.argv[1]; LOG = sys.argv[2]; SRC = sys.argv[3] if len(sys.argv) > 3 else "s3://test/agea4.zarr"
 def sample(stop):
     me = os.getpid(); t0 = time.time()

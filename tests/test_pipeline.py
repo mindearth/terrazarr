@@ -1,17 +1,15 @@
-import json
 import os
 import time
 
 import numpy as np
 import pytest
-import rasterio
 import xarray as xr
 import zarr
 from rasterio.windows import from_bounds
+from synth import make_input
 
 from geozarr_pyramid import geozarr, utils
 from geozarr_pyramid.store import get_zarr_store, set_spatial_info
-from synth import make_input
 
 
 def _run(inp, out, **kw):
@@ -264,7 +262,8 @@ def test_band_last_source_is_one_task_per_block(tmp_path, dask_client):
     pyramid as the per-band reference."""
     H = W = 512
     rng = np.random.default_rng(0)
-    data = rng.integers(0, 255, (H, W, 3), dtype="uint8"); data[:, :200, :] = 0
+    data = rng.integers(0, 255, (H, W, 3), dtype="uint8")
+    data[:, :200, :] = 0
     ds = xr.Dataset({"data": (("y", "x", "band"), data)},
                     coords={"y": 5e6 - np.arange(H) * 10.0, "x": 1e6 + np.arange(W) * 10.0, "band": np.arange(3)})
     ds = ds.rio.write_crs("EPSG:3857")

@@ -15,8 +15,7 @@ import zarr
 from fsspec.implementations.local import LocalFileSystem
 from s3fs import S3FileSystem
 
-from geozarr_pyramid.store import get_storage_options
-from geozarr_pyramid.store import get_zarr_store
+from geozarr_pyramid.store import get_storage_options, get_zarr_store
 from geozarr_pyramid.types import S3Credentials, S3FsOptions
 
 
@@ -269,7 +268,6 @@ def open_s3_zarr_group(s3_path: str, mode: str = "r", **s3_kwargs: Any) -> zarr.
     zarr.Group
         Zarr group
     """
-    storage_options = get_storage_options(s3_path).get("storage_options", {})
     return zarr.open_group(
         get_zarr_store(s3_path),
         mode=mode,
@@ -463,7 +461,6 @@ def open_zarr_group(path: str, mode: str = "r", **kwargs: Any) -> zarr.Group:
     zarr.Group
         Zarr group
     """
-    storage_options = get_storage_options(path, **kwargs).get("storage_options", {})
     return zarr.open_group(
         get_zarr_store(path),
         mode=mode,

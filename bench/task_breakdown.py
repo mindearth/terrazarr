@@ -7,13 +7,20 @@ _write_and_reduce, ...) and the busy fraction of the 8 workers. --skip-empty mon
 the fused write task to bypass the zarr write for all-nodata blocks (zarr stores nothing for
 them anyway) to measure that saving.
 """
-import sys, os, time, shutil, collections
+import collections
+import os
+import shutil
+import sys
+import time
+
 sys.path.insert(0, "bench")
-from scaling import make_input  # noqa: E402
 import xarray as xr
 from dask.distributed import Client, get_task_stream
+from scaling import make_input  # noqa: E402
+
 from geozarr_pyramid.geozarr import create_geozarr_dataset
 from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+
 if __name__ == "__main__":
     n = int(sys.argv[1]); chunk = 4096
     inp = f"{sys.argv[2]}/ts_in_{n}.zarr"; out = f"{sys.argv[2]}/ts_out_{n}.zarr"

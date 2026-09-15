@@ -68,10 +68,12 @@ def test_reduce_block_fast_path_and_nan_rules():
     # NaN-only block with a numeric nodata: no valid pixel, output is the nodata value
     assert (utils.reduce_block(allnan, 2, 2, "mean", nodata_value=-1) == -1).all()
     # nodata-0 shortcut must not swallow NaNs: two NaN and two values give their mean
-    a = np.full((2, 2), np.nan); a[:, 0] = [5.0, 7.0]
+    a = np.full((2, 2), np.nan)
+    a[:, 0] = [5.0, 7.0]
     assert utils.reduce_block(a, 2, 2, "mean", nodata_value=0)[0, 0] == 6.0
     # one valid pixel of four is below the 30 % rule: nodata
-    a = np.full((2, 2), np.nan); a[0, 0] = 5.0
+    a = np.full((2, 2), np.nan)
+    a[0, 0] = 5.0
     assert utils.reduce_block(a, 2, 2, "mean", nodata_value=0)[0, 0] == 0.0
     # integer target rounds to nearest
     b = np.array([[1, 2], [2, 2]], dtype="uint8")

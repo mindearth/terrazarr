@@ -1,0 +1,21 @@
+site_name: geozarr-pyramid
+site_description: GeoZarr multiscale pyramids for planetary-scale rasters
+repo_url: https://github.com/ORG-PLACEHOLDER/geozarr-pyramid
+theme:
+  name: material
+  features: [navigation.sections, content.code.copy, toc.integrate]
+  palette:
+    - scheme: default
+      toggle: { icon: material/brightness-7, name: dark }
+    - scheme: slate
+      toggle: { icon: material/brightness-4, name: light }
+nav:
+  - Overview: index.md
+  - Benchmarks: benchmarks.md
+  - Changes against the original: changes.md
+  - Profile: profile.md
+  - S3 and MinIO: minio.md
+  - Tests: testing.md
+markdown_extensions:
+  - tables
+  - toc: { permalink: true }

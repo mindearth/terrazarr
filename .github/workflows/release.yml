@@ -1,0 +1,44 @@
+name: Release
+
+# On a tag v*: build sdist and wheel, publish to PyPI through trusted publishing (no token:
+# register the repository and this workflow as a trusted publisher on pypi.org), attach the
+# artifacts to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - run: |
+          uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest && .venv/bin/python -m pytest -q tests/test_downsample.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

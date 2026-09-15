@@ -27,6 +27,7 @@ def count_objects(path: str) -> int:
     """Files under a local path, or objects under an s3:// prefix."""
     if path.startswith("s3://"):
         import obstore
+
         from geozarr_pyramid.store import get_obstore
 
         return sum(1 for _ in obstore.list(get_obstore(path)).collect())
@@ -39,6 +40,7 @@ def count_objects(path: str) -> int:
 def remove_output(path: str) -> None:
     if path.startswith("s3://"):
         import obstore
+
         from geozarr_pyramid.store import get_obstore
 
         st = get_obstore(path)

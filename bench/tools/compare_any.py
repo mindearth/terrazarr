@@ -13,7 +13,6 @@ import argparse
 
 import dask
 import dask.array as da
-import numpy as np
 import zarr
 
 

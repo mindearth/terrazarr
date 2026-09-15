@@ -1127,7 +1127,6 @@ def create_geozarr_compliant_multiscales(
     if g is None:
         return {}
     data_vars = g.data_vars
-    native_width, native_height = g.native_width, g.native_height
     native_crs, native_bounds, native_px = g.native_crs, g.native_bounds, g.native_px
     overview_levels = g.overview_levels
     left, bottom, right, top = native_bounds
