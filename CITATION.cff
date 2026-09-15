@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "geozarr-pyramid: GeoZarr multiscale pyramids for planetary-scale rasters"
+type: software
+authors:
+  - family-names: Asaro
+    given-names: Francesco
+    affiliation: Mindearth
+license: Apache-2.0
+repository-code: "https://github.com/[ORG]/geozarr-pyramid"
+url: "https://[ORG].github.io/geozarr-pyramid"
+abstract: >-
+  A lazy, windowed and resumable writer of GeoZarr multiscale pyramids (zarr v3, sharded)
+  that scales to rasters of millions of pixels a side with bounded memory. Derived from
+  eopf-geozarr (Development Seed for ESA, Apache-2.0).
+references:
+  - type: software
+    title: "eopf-geozarr"
+    authors:
+      - name: "Development Seed"
+      - name: "European Space Agency (ESA)"
+    repository-code: "https://github.com/EOPF-Explorer/data-model"
+    license: Apache-2.0

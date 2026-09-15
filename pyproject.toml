@@ -1,9 +1,23 @@
 [project]
 name = "geozarr-pyramid"
-version = "0.1.0"
-description = "GeoZarr multiscale pyramid writer (zarr v3, sharded), extracted from me-geotools zarr_pyramid_v3"
+dynamic = ["version"]
+description = "GeoZarr multiscale pyramids for planetary-scale rasters: lazy, windowed, resumable (zarr v3, sharded)"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Francesco Asaro", email = "francesco.asaro@mindearth.ch" }]
 requires-python = ">=3.11"
+keywords = ["geozarr", "zarr", "multiscale", "pyramid", "overviews", "dask", "xarray", "cloud-native", "geospatial"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
     "dask[array,distributed]>=2025.1",
     "xarray>=2025.1",
@@ -18,15 +32,27 @@ dependencies = [
     "obstore>=0.5",
 ]
 
+[project.urls]
+Homepage = "https://github.com/[ORG]/geozarr-pyramid"
+Documentation = "https://[ORG].github.io/geozarr-pyramid"
+Changelog = "https://github.com/[ORG]/geozarr-pyramid/blob/main/docs/changes.md"
+Issues = "https://github.com/[ORG]/geozarr-pyramid/issues"
+Upstream = "https://github.com/EOPF-Explorer/data-model"
+
 [project.scripts]
 geozarr-pyramid = "geozarr_pyramid.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "psutil>=5.9"]
+dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]
+docs = ["mkdocs-material>=9.5"]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+# version from git tags (v0.2.0 -> 0.2.0); untagged commits get a dev suffix
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["src"]

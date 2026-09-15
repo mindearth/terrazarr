@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mindearth
+# Derived from eopf-geozarr (Development Seed for ESA), Copyright 2025 European Space Agency (ESA),
+# Apache-2.0: https://github.com/EOPF-Explorer/data-model
 """Types and constants for the GeoZarr data API."""
 
 from typing import Any, Final, Literal, TypedDict

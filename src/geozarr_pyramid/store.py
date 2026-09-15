@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mindearth
 """Store helpers vendored from me_geotools.utils.{zarr,s3}, without private dependencies.
 
 Credentials for s3:// paths come from the environment:

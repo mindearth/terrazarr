@@ -1,0 +1,12 @@
+geozarr-pyramid
+Copyright 2026 Mindearth
+
+This product includes software developed as eopf-geozarr by Development Seed for the
+European Space Agency (ESA), Copyright 2025 European Space Agency (ESA), licensed under the
+Apache License, Version 2.0: https://github.com/EOPF-Explorer/data-model
+
+geozarr-pyramid started as a fork of eopf_geozarr.conversion.geozarr (the GeoZarr multiscale
+writer of that package). The pipeline, the multiscale metadata layout and several function
+names are theirs; the lazy, windowed, resumable rewrite for planetary-scale rasters, the
+benchmark harness and the documentation are this project's. See CHANGES.md for the list of
+changes against the original.
