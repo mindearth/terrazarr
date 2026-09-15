@@ -1,4 +1,252 @@
-# Benchmark results
+# Benchmarks
+
+## Summary
+
+Baseline is the module this project was forked from (eopf-geozarr with the method and nodata options of the internal fork, see "Reproducibility" in the benchmark docs), run on the same inputs, machine (24 cores,
+43 GB) and MinIO with the same settings (shard 4096 unless stated, chunk 256, sharding, 8 threads).
+The sections below hold the full tables and methods; the profile that motivated changes 12–17 is
+[profile.md](profile.md), the MinIO measurements are [minio.md](minio.md), the change history is
+[changes.md](changes.md).
+
+| input | baseline | optimized, 8 worker processes | speed-up |
+|---|---:|---:|---:|
+| WSF3Dv3 Italy, 178335×200599 float64, MinIO | 1344 s | 461 s | 2.9× |
+| WSF3Dv3 Italy, local NVMe | 1287 s | 346 s | 3.7× |
+| Italy 32768² window, MinIO, shard 4096 | 61 s | 33 s | 1.9× |
+| Italy 32768² window, MinIO, shard 8192 | 71 s | 37 s | 1.9× |
+
+Synthetic scenarios (`bench/compare.py`, one process with 4 threads for both):
+
+| scenario | baseline | optimized | speed-up |
+|---|---:|---:|---:|
+| s1: uint8 16384², sharded, min | 14.6 s | 8.6 s | 1.7× |
+| s2: uint8 16384², unsharded, mean | 32.5 s | 10.0 s | 3.3× |
+| s3: uint8 8×8192², sharded, mean | 22.7 s | 12.6 s | 1.8× |
+| s4: float32 12288², sharded, median | 18.2 s | 16.6 s | 1.1× |
+
+Memory and store traffic, measured on single-process runs so the counters cover the whole
+pipeline:
+
+| input | peak RSS [MB], baseline → optimized | chunk GETs, baseline → optimized |
+|---|---:|---:|
+| s1 | 3815 → 909 | 1999 → 177 |
+| s2 | 2241 → 885 | 5542 → 1508 |
+| s3 | 1818 → 962 | 833 → 381 |
+| s4 | 5022 → 2550 | 2561 → 417 |
+| Italy window, shard 4096 | 2790 → 2303 | 543 → 391 |
+| Italy window, shard 8192 | 5053 → 7337 | 22240 → 569 |
+| full Italy | 3575 → 3953 | 27914 → 25615 |
+
+The baseline's low RSS at shard 8192 is the flip side of its 22 240 GETs: it reads small pieces
+per output tile. The full-Italy wall times are from suite v2 on a quiet machine; the current code
+(suite v3, change 17) reads level 0 once, which is where its GET count comes from, and was
+re-measured under load with identical output.
+
+Input formats. The pipeline reads GeoTIFFs directly (rioxarray, one GDAL handle per thread,
+`/vsis3/` on MinIO), so the same raster was fed in as the striped source (one-row strips), as a
+COG (512² tiles, `gdal_translate -of COG`, 40 % of its tiles sparse) and as the 2048-chunked zarr
+the extract writes; optimized module, same settings, MinIO ([benchmarks.md](benchmarks.md), "Input formats"):
+
+| input | 32k window, 8 threads | 32k window, 8 processes | full Italy, 8 threads | full Italy, 8 processes |
+|---|---:|---:|---:|---:|
+| striped GeoTIFF, read directly | 40 s | 41 s | 1398 s (12 GB GDAL cache, 17.7 GB RSS) | not viable (one strip cache per process) |
+| striped GeoTIFF via the extract (259 s) + zarr | | | 1356 s | 719 s |
+| COG | 40 s | 32 s | 1104 s | 507 s |
+| zarr | 45 s | 36 s | 1097 s | 432 s |
+
+At full scale the chunked formats are equivalent (zarr equal or up to 15 % faster, COG at 1.5–2.5×
+the memory); the window's COG edge comes from its 44 % sparse tiles. Reading the striped source
+directly costs as much as the extract plus a zarr run, so the extract stays. Note that every
+baseline-vs-optimized number above is the pyramid stage alone, fed from the extracted zarr:
+end to end from the striped source the optimized pipeline is 719 s against the baseline's
+259 + 1344 = 1603 s, 2.2×.
+
+Other writers, same 32768² window, local zarr input, mean, 8 levels (`bench/tools/`,
+[benchmarks.md](benchmarks.md) "Other GeoZarr pyramid writers"):
+
+| writer | wall | peak RSS | objects | overview values |
+|---|---:|---:|---:|---|
+| this module, 8 processes | 19 s | 0.6 GB main | 148 | = baseline |
+| this module, 8 threads | 35 s | 2.4 GB | 148 | = baseline |
+| topozarr 0.1.8 | 32 s | 3.1 GB | 2108 | zeros averaged in |
+| GDAL 3.13.2 (`gdal_translate` + `gdaladdo`) | 38 s | 2.3 GB | 21865 | zeros averaged in |
+| eopf-geozarr 0.7.1 (upstream of the baseline) | 78 s | 18.6 GB | 68 | zeros averaged in |
+
+Full Italy, 178335×200599 float64, 10 levels, local NVMe (eopf not run: it holds each whole
+level in memory, 286 GB at level 0):
+
+| writer | wall | peak RSS | objects | size | overview values |
+|---|---:|---:|---:|---:|---|
+| this module, 8 processes | 367 s | 0.7 GB main | 2178 | 2.6 GB | = baseline at all 10 levels |
+| GDAL 3.13.2 | 700 s | 9.0 GB | 430 602 | 3.8 GB | 1 px larger per level; 0.9 % of level-1 pixels differ on the overlap, 19.5 % at level 9 |
+| topozarr 0.1.8 | 1087 s | 1.3 GB | 41 361 | 2.3 GB | 0.5 % of level-1 pixels differ, 18.5 % at level 9 |
+
+How they work:
+
+| | this module | eopf-geozarr | topozarr | GDAL |
+|---|---|---|---|---|
+| execution | lazy dask graph, one task per output shard | level 0 lazy (dask); overviews eager numpy, whole level (`ds[var].values`) | own thread pool over shard-aligned regions, Rust kernel, no dask | block-cached single process |
+| level 1 | inside the level-0 write task | whole level 0 in numpy | fused into the level-0 copy when levels 1+ fit in RAM, else read back | `gdaladdo` pass over level 0 |
+| levels ≥ 2 | 4 parent shards read from the store per task | whole previous level in numpy | previous level read back from the store | each pass from the previous overview |
+| memory | one parent shard + output per task × threads | whole level × ~2 | workers × 5 × region | block cache + overview buffers |
+| parallelism | dask threads or worker processes | dask threads for level 0 only | `max_workers` threads | codec threads only |
+| nodata | mean of valid pixels, block blanked below 30 % valid | zeros averaged in | zeros averaged in, all-fill regions skipped | numeric fill value as nodata; NaN fill: zeros averaged in |
+| overview size | trimmed, pixel size exactly `2**L` × native | trimmed | trimmed | rounded up, extent stretched |
+| chunk / shard | `--chunk-size` / `--shard-size` / `--sharding` | eopf `spatial_chunk`; one shard per level | chosen by it (512 KB chunks, ≤ 4 per shard) | `BLOCKSIZE`, no shards |
+| layout, metadata | `0`, `1`, … groups; GeoZarr multiscales + tile matrix set | `<group>/0`, `1`, …; GeoZarr 0.4 | `0`, `1`, …; zarr-conventions multiscales | root array + `ovr_2x`, …; zarr-conventions multiscales |
+| resume | per-band validation, retry, failed batch rewritten | per-band validation, retry | none | none |
+
+Only this module applies the nodata rule; the other three average nodata zeros in and so
+differ from the baseline in the same places. Details and the smoke-scale semantics probe are in
+[benchmarks.md](benchmarks.md), "Other GeoZarr pyramid writers".
+
+Output: identical to the baseline at every level for min, median and float means; integer means
+differ by at most 1 per level because the baseline truncated ([changes.md](changes.md), change 10). The
+optimized output additionally carries a decodable CRS on every overview level and exact `2**L`
+pixel sizes, which the baseline does not (changes 9 and 11).
+
+
+### Scaling limits
+
+Measured on a 20 cm orthophoto of Italy (`s3://test/agea4.zarr`: 2 263 040 × 2 191 360 × 4 bands
+uint8, band-last, 1.18 TB stored in 5 500 of 47 294 source shards), on which the CLI with 8
+worker processes reached 70 GB and took the machine down ([benchmarks.md](benchmarks.md), "Scaling").
+
+Main findings:
+
+- **The memory is the dask graph, not the data.** Level 0 (with the fused level 1) is one dask
+  graph; the client and scheduler that hold it live in the main process and need **36–45 KB
+  per level-0 shard task**, on top of 0.15 GB. It is linear in the number of tasks and
+  independent of the pixel count. The reproduction on the real store went from 0.5 GB to a
+  29 GB peak in 19 minutes of graph construction, workers flat at 1.1 GB, before any pixel
+  was read.
+
+  | level-0 shard tasks | main process peak | example |
+  |---:|---:|---|
+  | 1 024 | 0.22 GB | 65536² × 4 bands at shard 4096 |
+  | 16 384 | 0.80 GB | 262144² × 4 bands at shard 4096 |
+  | 65 536 | 2.56 GB | 524288² × 4 bands at shard 4096 |
+  | 1 180 000 | 45–55 GB (extrapolated, 29 GB measured before stopping) | agea4 at shard 4096 |
+
+- **Worker memory scales with the block, not the raster:** about `4 × chunk² × bands × itemsize`
+  per worker for a band-last input. Chunk 8192 fits 8 workers on 43 GB (7 GB in total); chunk
+  16384 does not (28 GB, the batch write fails).
+- **An empty shard is not free.** 0.35 s of worker time each, spent in zarr's sharding codec
+  walking 256 inner chunks to store nothing; skipping the write for all-nodata blocks (they
+  are never stored anyway) measures 0.13 s. On a raster whose shards are 88 % empty that is
+  half the run.
+- **A data shard-band costs 2.8 s** at 8 workers, of which 6.1 s per four-band block is the read
+  from MinIO; the link delivers 110 MB/s at any concurrency, so 1.18 TB is a 3-hour floor and
+  more workers would not read faster. Projected end to end at shard 4096: about 26 hours.
+- The band-last layout is handled correctly (level 0 equals the transposed input, level 1 the
+  exact per-band mean); it is not the cause.
+
+What was done about it (changes 19–21, branch `windowed-level0`):
+
+1. Level 0 is written in spatial windows, one compute per window (`--window-shards`, default 32
+   blocks per axis), so the graph is bounded by the window whatever the raster, with per-window
+   resume markers. Levels 2+ already worked from the store.
+2. The zarr write is skipped for level-0 blocks equal to the fill value.
+3. A band-last source keeps its bands together in one task per block instead of a dask rechunk.
+
+Measured effect: see "Windowed level 0" in [benchmarks.md](benchmarks.md).
+
+
+## Reproducibility
+
+Every number in this document was measured on one machine: 24 cores, 43 GB RAM, local NVMe,
+Ubuntu 22.04 (kernel 6.8), Python 3.11, a MinIO reachable over a 1 Gbit/s link (110 MB/s reads,
+22 MB/s writes, see [minio.md](minio.md)). Wall times vary by about ±5 % between repeats and
+more when the machine is shared, which the notes say when it happened; store traffic, task
+counts and peak memory are stable. Each results file under `bench/out/` names the run; the
+suites below write them.
+
+### Data
+
+| placeholder | what | used by |
+|---|---|---|
+| `[DATA-1]` | `WSF3Dv3_Italy.tif`, 178335 × 200599 float64, striped GeoTIFF (World Settlement Footprint 3D, Italy) and its license | full-Italy and window suites, input-format runs, profile |
+| `[DATA-2]` | the 20 cm orthophoto zarr (2263040 × 2191360 × 4 uint8, band-last) | scaling study, MinIO study |
+| `[DATA-3]` | an S3-compatible endpoint with a writable bucket; the docs used a MinIO named by `AWS_ENDPOINT_URL` | every `s3://` run |
+
+Synthetic scenarios (`bench/compare.py`) need nothing external and are what CI runs.
+
+### Commands
+
+Local, synthetic inputs:
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python bench/compare.py              # writes bench/out/results.md
+TAG=_v2 bash bench/run_suite.sh                # every benchmark of benchmarks.md (about an hour)
+bash bench/run_inputs_win32k.sh                # striped GeoTIFF vs COG vs zarr input, 32k window (10 min)
+bash bench/run_inputs_full.sh                  # same on full Italy (about 2 hours)
+bash bench/tools/run_tools_win32k.sh           # eopf-geozarr, topozarr, GDAL 3.13 and this module on the window
+bash bench/tools/run_tools_full.sh             # topozarr, GDAL and this module on full Italy
+.venv/bin/python bench/scaling.py --sizes 16384,32768,65536   # main/worker memory vs shard count on metadata-only inputs
+.venv/bin/python bench/task_breakdown.py 65536 bench/data/scaling  # per-task compute time from the task stream
+.venv/bin/python bench/tiff_tiles.py x.tif     # tiles per level of a (Big)TIFF and how many are sparse
+.venv/bin/python bench/compare.py --only s1    # one scenario
+.venv/bin/python bench/compare_outputs.py A.zarr B.zarr   # two pyramids level by level, one shard at a time
+```
+
+`compare_outputs.py` streams each level in 4096² blocks (`--chunk`, `--threads`), so it needs
+about 2 GB whatever the level size. Runs that may exceed the machine's memory are best started in
+their own cgroup, `systemd-run --user --scope -p MemoryMax=16G <cmd>`: an out-of-memory kill then
+takes only that job, not the terminal pane it runs in.
+
+Each benchmark run is a separate process with an in-process dask cluster, so store traffic,
+executed tasks and peak RSS of the whole pipeline are measured for both implementations on
+identical inputs.
+
+### Against an S3 store
+
+```bash
+source bench/s3env.sh                       # exports MinIO credentials from ~/repos/.myenvs
+.venv/bin/python bench/tif_to_zarr.py --src s3://bucket/x.tif --dst s3://bucket/x.zarr \
+    --row0 74000 --col0 78000 --rows 32768 --cols 32768      # window of a striped GeoTIFF -> zarr input
+.venv/bin/python bench/run_one.py --impl optimized --input s3://bucket/x.zarr --output s3://bucket/out.zarr \
+    --shard-size 4096 --chunk-size 256 --sharding --method mean --nodata 0 --threads 8
+```
+
+The baseline needs `botocore < 1.36` against this MinIO (newer botocore omits the `Content-MD5`
+header that MinIO requires on bulk deletes, which s3fs uses; the upstream pins it for the same
+reason). Build it once and run the baseline with that interpreter:
+
+```bash
+uv venv --python 3.11 .venv-baseline
+uv pip install --python .venv-baseline/bin/python "eopf-geozarr==0.7.1" "dask[distributed]" obstore rioxarray "s3fs==2024.12.0" "aiobotocore==2.15.2" "botocore<1.36"
+.venv-baseline/bin/python bench/run_one.py --impl baseline ...
+```
+
+The optimized module does not use s3fs and runs with current botocore. See [benchmarks.md](benchmarks.md).
+
+#### Extract memory: strip size vs peak RSS
+
+`tif_to_zarr.py` reads full-width row strips in parallel and every strip is one dask task, so
+`--threads` strips are decoded at once and each is held until its `--chunk` row is written:
+
+```
+peak RSS  ≈  1.5 GB  +  threads × strip × width × itemsize
+```
+
+The constant is the GDAL block cache (1 GB), the curl cache (0.5 GB) and the interpreter.
+Measured on `WSF3Dv3_Italy.tif` (width 200 599, float64, 8 threads):
+
+| `--strip` | strip size | predicted | measured peak RSS |
+|---:|---:|---:|---:|
+| 2048 | 3.29 GB | 27.8 GB | 28.4 GB |
+| 1024 | 1.64 GB | 14.6 GB | 13.8 GB |
+
+So halving the strip halves the peak, and the peak scales linearly with the raster width and the
+thread count. Pick `strip` so that `threads × strip × width × itemsize` is comfortably below the
+free memory; the strip count only changes the number of range requests, not the total bytes read.
+`bench/run_full_italy.sh` defaults to `STRIP=1024` for this reason. The pyramid step itself is
+bounded by `threads × shard-size² × itemsize × 2` instead (see above), 3.5 GB for the same raster
+at shard 4096.
+
+## Results in full
+
 
 threads per run: 4
 
@@ -199,7 +447,7 @@ Store traffic (chunk GETs/PUTs, tasks, objects) is identical to the MinIO runs f
 ## Profile of the optimized pipeline (local 32768² Italy window)
 
 Summary; the full report with the frame table, the GIL recording, the kernel micro-benchmark and
-what each finding turned into is `bench/profile.md`.
+what each finding turned into is [profile.md](profile.md).
 
 `py-spy record` over `run_one.py --impl optimized`, shard 4096, 8 threads, input and output on
 local NVMe (`bench/data/italy/input/WSF3Dv3_Italy_win32k.zarr`). Wall 47 s at 279 % CPU of the

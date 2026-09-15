@@ -90,6 +90,30 @@ def open_geotiff(path: str, shard_size: int):
     return ds
 
 
+def provenance(impl: str) -> dict:
+    """Git commit, package versions and machine, so a results file says what produced it."""
+    import platform
+    import subprocess
+    from importlib.metadata import PackageNotFoundError, version
+
+    def v(name: str) -> str | None:
+        try:
+            return version(name)
+        except PackageNotFoundError:
+            return None
+
+    try:
+        commit = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip() or None
+    except Exception:  # noqa: BLE001
+        commit = None
+    return {
+        "commit": commit,
+        "versions": {k: v(k) for k in ("geozarr-pyramid" if impl == "optimized" else "eopf-geozarr", "zarr", "dask", "xarray", "numpy", "obstore")},
+        "python": platform.python_version(),
+        "machine": {"cpus": os.cpu_count(), "platform": platform.platform()},
+    }
+
+
 def instrument_stores(counters: Counter) -> None:
     """Count chunk/metadata traffic on every zarr store class either implementation can use."""
     import zarr
@@ -216,6 +240,7 @@ def main() -> None:
 
     sys.stdout = sys.__stdout__
     print(json.dumps({
+        "provenance": provenance(args.impl),
         "impl": args.impl,
         "ok": err is None,
         "error": err,

@@ -16,7 +16,7 @@ Key compliance features:
 - Native CRS preservation (no TMS reprojection)
 - Proper multiscales metadata structure
 
-Scaling design (see CHANGES.md):
+Scaling design (see docs/changes.md):
 - one zarr store object is used for every read, write and attribute update
 - level N+1 is built from level N re-opened from the store, one dask block per shard
 - the dask block is derived from the shard (or shard_size), never from the tile width

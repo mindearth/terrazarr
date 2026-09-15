@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Every benchmark of bench/results.md for the optimized module, in one go (about an hour):
+# Every benchmark of docs/benchmarks.md for the optimized module, in one go (about an hour):
 # synthetic scenarios (baseline vs optimized), the MinIO Italy window at chunk 4096 and 8192,
 # the full Italy raster on MinIO and on a local copy. Threaded runs carry the store counters;
 # 8-process runs give the wall time (counters then cover the main process only).
