@@ -15,9 +15,9 @@ from synth import make_input
 
 
 def _run(inp, out, **kw):
-    ds = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": kw["spatial_chunk"], "x": kw["spatial_chunk"]}, consolidated=False)
+    ds = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": kw["shard_size"], "x": kw["shard_size"]}, consolidated=False)
     ds = set_spatial_info(ds)
-    params = dict(groups=["/"], output_path=out, min_dimension=kw.get("tile_width", 64), tile_width=64, max_retries=1)
+    params = dict(groups=["/"], output_path=out, min_dimension=kw.get("chunk_size", 64), chunk_size=64, max_retries=1)
     params.update(kw)
     return geozarr.create_geozarr_dataset(xr.DataTree(ds), **params)
 
@@ -26,15 +26,15 @@ def _open_level(out, level):
     return xr.open_dataset(get_zarr_store(out), group=str(level), engine="zarr", consolidated=False, decode_coords="all")
 
 
-def test_precondition_spatial_chunk_multiple_of_tile(tmp_path):
-    with pytest.raises(ValueError, match="multiple of tile_width"):
-        geozarr.create_geozarr_dataset(xr.DataTree(), ["/"], str(tmp_path / "o.zarr"), spatial_chunk=300, tile_width=256)
+def test_precondition_shard_size_multiple_of_chunk_size(tmp_path):
+    with pytest.raises(ValueError, match="multiple of chunk_size"):
+        geozarr.create_geozarr_dataset(xr.DataTree(), ["/"], str(tmp_path / "o.zarr"), shard_size=300, chunk_size=256)
 
 
 def test_encoding_shards_bounded_and_clipped():
     ds = xr.Dataset({"v": (("t", "y", "x"), np.zeros((12, 100, 3000), dtype="uint8"), {"grid_mapping": "spatial_ref"})})
     ds = ds.assign_coords(spatial_ref=xr.DataArray(0))
-    enc = geozarr._create_geozarr_encoding(ds, None, tile_width=256, spatial_chunk=1024, enable_sharding=True)
+    enc = geozarr._create_geozarr_encoding(ds, None, chunk_size=256, shard_size=1024, enable_sharding=True)
     assert enc["v"]["chunks"] == (1, 100, 256)
     assert enc["v"]["shards"] == (1, 100, 1024), "one slice per shard, shard clipped to a chunk multiple"
     assert enc["spatial_ref"] == {"compressors": None}
@@ -44,7 +44,7 @@ def test_pipeline_2d_levels_and_georeferencing(tmp_path, dask_client):
     # 1000 is not a power of two: exercises trimming + constant pixel size
     inp = make_input(tmp_path / "in.zarr", shape=(1000, 1000), input_chunk=250)
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=256, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp, out, shard_size=256, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
 
     root = zarr.open_group(get_zarr_store(out), mode="r")
     layout = root.attrs["multiscales"]["layout"]
@@ -77,7 +77,7 @@ def test_pipeline_2d_levels_and_georeferencing(tmp_path, dask_client):
 def test_pipeline_3d_sharded(tmp_path, dask_client):
     inp = make_input(tmp_path / "in3.zarr", shape=(3, 512, 512), input_chunk=256)
     out = str(tmp_path / "out3.zarr")
-    _run(inp, out, spatial_chunk=256, tile_width=64, enable_sharding=True, method="max", nodata_value=0)
+    _run(inp, out, shard_size=256, chunk_size=64, enable_sharding=True, method="max", nodata_value=0)
     arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r")
     assert arr.shards == (1, 256, 256) and arr.chunks == (1, 64, 64)
     l1 = _open_level(out, 1)["data"]
@@ -89,14 +89,14 @@ def test_pipeline_3d_sharded(tmp_path, dask_client):
 def test_resume_skips_written_bands_and_levels(tmp_path, dask_client):
     inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=256, nan_corner=True)
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=256, tile_width=64, enable_sharding=True, method="mean")
+    _run(inp, out, shard_size=256, chunk_size=64, enable_sharding=True, method="mean")
     chunk_files = sorted(
         os.path.join(r, f) for r, _, fs in os.walk(os.path.join(out, "0", "data")) for f in fs if r.endswith("/c") or "/c/" in r
     )
     assert chunk_files
     before = {f: os.stat(f).st_mtime_ns for f in chunk_files}
     time.sleep(0.05)
-    _run(inp, out, spatial_chunk=256, tile_width=64, enable_sharding=True, method="mean")
+    _run(inp, out, shard_size=256, chunk_size=64, enable_sharding=True, method="mean")
     after = {f: os.stat(f).st_mtime_ns for f in chunk_files}
     assert before == after, "a complete level 0 (NaN in the top-left pixel) must not be rewritten"
 
@@ -126,7 +126,7 @@ def test_fused_level1_store_levels_and_resume(tmp_path, dask_client, monkeypatch
     monkeypatch.setattr(geozarr, "FUSE_LEVEL_1", fuse)
     inp = make_input(tmp_path / "in.zarr", shape=(1000, 1000), input_chunk=250)
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
     root = zarr.open_group(get_zarr_store(out), mode="r")
     nlevels = len(root.attrs["multiscales"]["layout"])
     assert nlevels == 4
@@ -142,7 +142,7 @@ def test_fused_level1_store_levels_and_resume(tmp_path, dask_client, monkeypatch
     assert len(files) > 20
     before = {f: os.stat(f).st_mtime_ns for f in files}
     time.sleep(0.05)
-    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
     assert {f: os.stat(f).st_mtime_ns for f in files} == before
 
 
@@ -150,7 +150,7 @@ def test_pipeline_float_nan_nodata_and_compressor_none(tmp_path, dask_client):
     inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=256, dtype="float32", nodata=None)
     out = str(tmp_path / "out.zarr")
     from geozarr_pyramid.geozarr import make_compressor
-    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", compressor=make_compressor("none"))
+    _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", compressor=make_compressor("none"))
     arr = zarr.open_array(get_zarr_store(out), path="1/data", mode="r")
     assert arr.compressors == ()
     l0 = _open_level(out, 0)["data"].values
@@ -184,7 +184,7 @@ def test_window_failure_is_retried_then_resumed(tmp_path, dask_client, monkeypat
     src = xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values
     out = str(tmp_path / "out.zarr")
     with pytest.raises(RuntimeError, match="Failed to write all bands"):
-        _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0,
+        _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0,
              max_retries=2, window_shards=2)
     log = capsys.readouterr().out
     assert "injected shard failure" in log and "retrying" in log, "the once-failing window was not retried"
@@ -200,7 +200,7 @@ def test_window_failure_is_retried_then_resumed(tmp_path, dask_client, monkeypat
     time.sleep(0.05)
 
     monkeypatch.setattr(geozarr, "_write_and_reduce", orig)
-    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0,
+    _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0,
          max_retries=1, window_shards=2)
     assert "resuming from" in capsys.readouterr().out
     assert geozarr._read_window_marker(store, "0")[1], "completion marker missing after the resume"
@@ -219,7 +219,7 @@ def test_windowed_write_equals_reference(tmp_path, dask_client, window_shards):
     the edge and level-1 regions end on the trimmed level-1 shape."""
     inp = make_input(tmp_path / "in.zarr", shape=(1000, 1000), input_chunk=250)
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=64, tile_width=64, enable_sharding=True, method="mean", nodata_value=0,
+    _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0,
          window_shards=window_shards)
     store = get_zarr_store(out)
     nlevels = len(zarr.open_group(store, mode="r").attrs["multiscales"]["layout"])
@@ -239,7 +239,7 @@ def test_all_fill_blocks_skip_the_write(tmp_path, dask_client):
     inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
     zarr.open_array(get_zarr_store(inp), path="data", mode="r+")[:128, :128] = 0
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=128, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp, out, shard_size=128, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
     arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r")
     src = xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values
     assert not src[:128, :128].any() and arr.fill_value == 0
@@ -251,7 +251,7 @@ def test_all_fill_blocks_skip_the_write(tmp_path, dask_client):
     zarr.open_array(get_zarr_store(inp2), path="data", mode="r+")[:128, :128] = 0.0
     src2 = xr.open_dataset(get_zarr_store(inp2), engine="zarr", consolidated=False)["data"].values
     out2 = str(tmp_path / "out2.zarr")
-    _run(inp2, out2, spatial_chunk=128, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp2, out2, shard_size=128, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
     arr2 = zarr.open_array(get_zarr_store(out2), path="0/data", mode="r")
     assert np.isnan(arr2.fill_value)
     assert os.path.exists(os.path.join(out2, "0", "data", "c", "0", "0")), "zeros are data when the fill value is NaN"
@@ -274,7 +274,7 @@ def test_band_last_source_is_one_task_per_block(tmp_path, dask_client):
     src = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": 128, "x": 128}, consolidated=False)["data"].transpose("band", "y", "x")
     assert geozarr._dask_chunks_for(enc, src.dims, 128, src.data.chunks) == {"band": 3, "y": 128, "x": 128}
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, spatial_chunk=128, tile_width=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp, out, shard_size=128, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
     arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r")
     assert arr.shape == (3, H, W) and arr.shards == (1, 128, 128)
     ref0 = np.moveaxis(data, -1, 0)

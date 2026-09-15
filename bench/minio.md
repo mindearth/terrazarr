@@ -29,7 +29,7 @@ pyramid run. Dates are 2026-09-07 to 2026-09-11.
 
 ## Pyramid runs, MinIO against local NVMe
 
-From `bench/results.md` (optimized module, chunk 4096, tile 256, mean, sharding):
+From `bench/results.md` (optimized module, shard 4096, chunk 256, mean, sharding):
 
 | run | local | MinIO | penalty |
 |---|---:|---:|---:|
@@ -87,6 +87,6 @@ of the default comes from those. Stay on zstd 3; do not use lz4 for a MinIO outp
 cut the bytes is a change of representation, e.g. dropping the constant alpha band or a
 lossy image codec, which is outside this pipeline.
 
-The output-to-input ratio on this window is about 0.9 (level 0 re-encoded per band at tile 256
+The output-to-input ratio on this window is about 0.9 (level 0 re-encoded per band at chunk 256
 against the source's four-band 2048² chunks), so the agea4 estimate above stands: about
 1.05 TB for level 0 and 1.4 TB for the pyramid.

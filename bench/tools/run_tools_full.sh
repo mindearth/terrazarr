@@ -14,7 +14,7 @@ run() { # name cap timeout cmd...
   systemd-run --user --scope -p MemoryMax=$cap -q timeout $T /usr/bin/time -f 'time: wall=%e cpu=%P maxrss=%MKB' "$@" 2> "$OUT/tools_full_$name.stderr" | tail -1 | tee "$OUT/tools_full_$name.json"
   echo "exit=$? $(grep '^time:' "$OUT/tools_full_$name.stderr" || echo 'time: (killed by timeout)')"; du -sh $D/full_$name.zarr 2>/dev/null | cut -f1 | sed 's/^/size: /'
 }
-run ours_w8 24G 3h .venv/bin/python bench/run_one.py --impl optimized --input $IN --output $D/full_ours_w8.zarr --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads 8 --workers 8 --quiet
+run ours_w8 24G 3h .venv/bin/python bench/run_one.py --impl optimized --input $IN --output $D/full_ours_w8.zarr --shard-size 4096 --chunk-size 256 --method mean --nodata 0 --sharding --threads 8 --workers 8 --quiet
 run topozarr 24G 3h .venv-topozarr/bin/python bench/tools/run_topozarr.py --input $IN --output $D/full_topozarr.zarr --levels 10 --workers 8
 run gdal 24G 3h bash bench/tools/run_gdal.sh $IN $D/full_gdal.zarr 10 256
 for name in ours_w8 topozarr gdal; do

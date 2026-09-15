@@ -6,8 +6,8 @@ motivated them; the shares below no longer describe the current code (see "Not m
 ## Setup
 
 `py-spy record -r 50 --format raw` over the whole of `bench/run_one.py --impl optimized` on the
-local 32768² Italy window (`bench/data/italy/input/WSF3Dv3_Italy_win32k.zarr`), chunk 4096,
-tile 256, mean, nodata 0, sharding, one process with 8 dask threads, input and output on local
+local 32768² Italy window (`bench/data/italy/input/WSF3Dv3_Italy_win32k.zarr`), shard 4096,
+chunk 256, mean, nodata 0, sharding, one process with 8 dask threads, input and output on local
 NVMe. Two recordings: all threads (10 465 samples) and GIL-holding samples only (`--gil`,
 1 314 samples). Wall 47 s at 279 % CPU of the 800 % available, peak RSS 2.7 GB.
 

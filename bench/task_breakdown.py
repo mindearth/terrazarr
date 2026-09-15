@@ -23,7 +23,7 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     with get_task_stream(client=client) as ts:
         so = sys.stdout; sys.stdout = open(os.devnull, "w")
-        create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path=out, spatial_chunk=chunk, min_dimension=256, tile_width=256, max_retries=1, enable_sharding=True, method="mean", nodata_value=0)
+        create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path=out, shard_size=chunk, min_dimension=256, chunk_size=256, max_retries=1, enable_sharding=True, method="mean", nodata_value=0)
         sys.stdout = so
     wall = time.perf_counter() - t0
     per = collections.defaultdict(lambda: [0, 0.0, 0.0, 0.0])   # count, compute, transfer, deserialize

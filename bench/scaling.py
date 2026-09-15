@@ -72,7 +72,7 @@ def run(n: int, workers: int, chunk: int, workdir: str) -> dict:
     sys.stdout = open(os.devnull, "w")
     err = None
     try:
-        create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path=out, spatial_chunk=chunk, min_dimension=256, tile_width=256,
+        create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path=out, shard_size=chunk, min_dimension=256, chunk_size=256,
                                max_retries=1, enable_sharding=True, method="mean", nodata_value=0)
     except Exception as e:  # noqa: BLE001
         err = f"{type(e).__name__}: {str(e)[:200]}"

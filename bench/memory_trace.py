@@ -39,7 +39,7 @@ if __name__ == '__main__':
     dt = xr.DataTree(ds)
     mark("create_geozarr_dataset")
     try:
-        create_geozarr_dataset(dt, groups=["/"], output_path=OUT, spatial_chunk=4096, min_dimension=256, tile_width=256, max_retries=1,
+        create_geozarr_dataset(dt, groups=["/"], output_path=OUT, shard_size=4096, min_dimension=256, chunk_size=256, max_retries=1,
                                enable_sharding=True, method="mean", nodata_value=0, compressor=make_compressor("zstd", 3))
         mark("done")
     except Exception as e:

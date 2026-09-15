@@ -58,7 +58,7 @@ threads per run: 4
   chunk GETs are stable across repeats.
 - Chunk GETs are the metric that transfers to S3, where every partial-shard read is one range request.
 - s3 writes more shard files by design: shards are one time slice each (change 6), which bounds task
-  memory by `spatial_chunk²` instead of growing with the time dimension.
+  memory by `shard_size²` instead of growing with the time dimension.
 - Output comparison (`bench/compare_outputs.py`): s1 (min) and s4 (median) are identical at every level.
   s2 and s3 (mean on uint8) differ by at most 1 per level, compounding to 4 at level 6, because the
   baseline truncated integer means (change 10). All shapes here are powers of two, so pixel sizes agree.
@@ -67,10 +67,10 @@ threads per run: 4
 
 Input: a 32768×32768 float64 window (row 74000, col 78000) of `WSF3Dv3_Italy.tif`, extracted to a
 2048-chunked zarr on MinIO with `bench/tif_to_zarr.py`. Both implementations write to the same
-MinIO bucket with `--tile-width 256 --method mean --nodata 0 --sharding --threads 8`.
+MinIO bucket with `--chunk-size 256 --method mean --nodata 0 --sharding --threads 8`.
 The baseline runs in `.venv-baseline` (botocore < 1.36, see README).
 
-### chunk 4096
+### shard 4096
 
 | metric | baseline | optimized | ratio |
 |---|---:|---:|---:|
@@ -82,7 +82,7 @@ The baseline runs in `.venv-baseline` (botocore < 1.36, see README).
 | metadata GETs | 281 | 289 | 1.03× |
 | objects | 148 | 148 | 1.00× |
 
-### chunk 8192
+### shard 8192
 
 | metric | baseline | optimized | ratio |
 |---|---:|---:|---:|
@@ -103,19 +103,19 @@ The baseline runs in `.venv-baseline` (botocore < 1.36, see README).
   optimized output has one.
 - Level-by-level comparison of the chunk-8192 outputs: values are identical at all 8 levels
   (max |diff| 0), pixel sizes agree, shapes are powers of two.
-- At chunk 8192 the baseline issues 22 240 range requests for a 64-chunk input, i.e. it re-reads
+- At shard 8192 the baseline issues 22 240 range requests for a 64-chunk input, i.e. it re-reads
   the input per output tile. The optimized module reads each input chunk about five times in total
   across the whole pyramid.
-- Peak RSS at chunk 8192 follows the memory model in the README: 8 threads × 8192² × 8 bytes is
+- Peak RSS at shard 8192 follows the memory model in the README: 8 threads × 8192² × 8 bytes is
   4.3 GB of input blocks in flight, and the observed 8.4 GB is that times a factor of two. The
   baseline uses less memory at 8192 only because it reads small pieces, which is what costs it the
-  22 240 GETs. Choose `--chunk-size`/`--threads` so that `threads × chunk² × itemsize × 2` fits.
+  22 240 GETs. Choose `--shard-size`/`--threads` so that `threads × shard² × itemsize × 2` fits.
 
 ## Against MinIO: full WSF3Dv3 Italy
 
 `bench/run_full_italy.sh`: the whole `WSF3Dv3_Italy.tif` (178335×200599 float64, 1.3 % non-zero)
 extracted to a 2048-chunked zarr on MinIO, then the optimized pyramid with
-`--chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads 8`.
+`--shard-size 4096 --chunk-size 256 --method mean --nodata 0 --sharding --threads 8`.
 Same 24-core / 43 GB machine, MinIO over the local network.
 
 | step | wall time | peak RSS [MB] | objects | size on MinIO [GB] |
@@ -134,7 +134,7 @@ Same 24-core / 43 GB machine, MinIO over the local network.
 | metadata GETs | 341 | 355 | 1.04× |
 | objects | 2166 | 2178 | 1.01× |
 
-At chunk 4096 the two implementations do almost the same work on this raster: the input chunks
+At shard 4096 the two implementations do almost the same work on this raster: the input chunks
 (2048²) fit the output shards (4096²) exactly, so the baseline's per-tile re-reads that dominate
 the chunk-8192 window run do not occur. The gains here are in the output, not the runtime.
 
@@ -169,7 +169,7 @@ Checks on the written pyramid:
 
 Same input zarr copied to local NVMe (`rclone`, 30 s for 1.87 GB), both implementations reading
 and writing locally (`ROOT=bench/data/italy EXTRACT=0 TAG=_local`), run back to back with the
-same settings as the MinIO runs (chunk 4096, tile 256, mean, nodata 0, sharding, 8 threads).
+same settings as the MinIO runs (shard 4096, chunk 256, mean, nodata 0, sharding, 8 threads).
 The input was in the page cache after the copy, so the local read side is effectively RAM.
 
 | wall time [s] | MinIO | local | local / MinIO |
@@ -201,7 +201,7 @@ Store traffic (chunk GETs/PUTs, tasks, objects) is identical to the MinIO runs f
 Summary; the full report with the frame table, the GIL recording, the kernel micro-benchmark and
 what each finding turned into is `bench/profile.md`.
 
-`py-spy record` over `run_one.py --impl optimized`, chunk 4096, 8 threads, input and output on
+`py-spy record` over `run_one.py --impl optimized`, shard 4096, 8 threads, input and output on
 local NVMe (`bench/data/italy/input/WSF3Dv3_Italy_win32k.zarr`). Wall 47 s at 279 % CPU of the
 800 % available; level-0 copy ≈ 18 s, level 1 ≈ 20 s, levels 2–7 ≈ 7.5 s.
 
@@ -281,7 +281,7 @@ the first section: s1 and s4 identical at every level, s2 and s3 differ by at mo
 | 8192 | t8 | 55.09 | 7337 | 63 | 569 | 44 | 85 |
 | 8192 | w8 | 36.93 | 170* | 63 | 22* | 18* | 85 |
 
-Before changes 12–16 (tables above): chunk 4096 57.79 s / 822 tasks / 455 GETs, chunk 8192
+Before changes 12–16 (tables above): shard 4096 57.79 s / 822 tasks / 455 GETs, shard 8192
 61.26 s / 237 tasks / 329 GETs / 8353 MB.
 
 ### Full WSF3Dv3 Italy, MinIO and local disk
@@ -310,12 +310,12 @@ max |diff| 0 at all 10 levels.
   cheaper (change 12). Change 17 fixes the double read, see the next section.
 - Per-process counters: the `w8` rows count only the main process, which writes the metadata and
   the small top levels. The number of tasks and objects is layout-independent.
-- Peak RSS of the threaded window run at chunk 8192 (7.3 GB) is unchanged in kind from the
+- Peak RSS of the threaded window run at shard 8192 (7.3 GB) is unchanged in kind from the
   earlier 8.4 GB: 8 threads × 8192² × 8 bytes of input in flight. Workers cap this per process.
 
 ## Change 17: one read of level 0 (local 32768² Italy window)
 
-`run_one.py --impl optimized`, chunk 4096, tile 256, mean, nodata 0, sharding, 1 process × 8
+`run_one.py --impl optimized`, shard 4096, chunk 256, mean, nodata 0, sharding, 1 process × 8
 threads, input and output on local NVMe. The three variants differ only in how level 1 is built.
 
 | level 1 built by | wall [s] | dask tasks | chunk GETs | peak RSS [MB] |
@@ -332,7 +332,7 @@ peak with the blockwise comparison).
 
 ## Suite v3: change 17 on the MinIO window and full Italy
 
-Same runs as suite v2 (MinIO window at chunk 4096, full Italy on MinIO and on local NVMe, `t8`
+Same runs as suite v2 (MinIO window at shard 4096, full Italy on MinIO and on local NVMe, `t8`
 and `w8` layouts) with change 17, on 2026-09-07 07:21–08:21 at commit `f849095`. Raw output in
 `bench/out/suite_v3.log` and `bench/out/*_v3_*.json`.
 
@@ -371,10 +371,10 @@ feeds the pyramid the same data in three formats without an extract:
   `RESAMPLING=AVERAGE` overviews (window: 218 MB, 20 s to build), read through rasterio/GDAL;
 - **zarr**: the 2048²-chunked, unsharded zarr v3 store the extract produces, read through zarr.
 
-`run_one.py` opens a GeoTIFF with rioxarray in `--chunk-size` blocks and `lock=False` (one GDAL
+`run_one.py` opens a GeoTIFF with rioxarray in `--shard-size` blocks and `lock=False` (one GDAL
 handle per dask thread), locally or through `/vsis3/` on MinIO (`bench/run_inputs_win32k.sh`,
 `bench/run_inputs_full.sh`). Store counters cover the output only for GeoTIFF inputs. Same
-pyramid settings as everywhere else: chunk 4096, tile 256, mean, nodata 0, sharding, 8 threads
+pyramid settings as everywhere else: shard 4096, chunk 256, mean, nodata 0, sharding, 8 threads
 (`t8`) or 8 single-threaded worker processes (`w8`).
 
 ### 32768² window (2026-09-07 13:56–14:03, quiet machine)
@@ -475,7 +475,7 @@ the fill value), which is the whole read cost of the zarr input in requests.
 
 The same local zarr input through four writers (`bench/tools/`, 2026-09-08, quiet machine):
 
-- **ours**: this module, chunk 4096, tile 256, mean, nodata 0, sharding, 8 threads (`t8`) or 8
+- **ours**: this module, shard 4096, chunk 256, mean, nodata 0, sharding, 8 threads (`t8`) or 8
   worker processes (`w8`);
 - **eopf**: upstream `eopf-geozarr` 0.7.1 (`bench/tools/run_eopf.py`, `.venv-eopf`), the
   package the baseline was forked from: `create_geozarr_dataset(spatial_chunk=4096,
@@ -512,7 +512,7 @@ From the sources (`src/geozarr_pyramid`, `eopf_geozarr/conversion/geozarr.py` 0.
 | nodata | mean of valid pixels, block blanked below 30 % valid; NaN or numeric nodata | mean over all pixels (nodata only if passed, not exposed by `create_geozarr_dataset`) | mean over all pixels; NaN-aware fill; all-fill regions skipped | numeric zarr `fill_value` honoured as nodata, NaN fill: all pixels averaged |
 | overview size | trimmed (`floor`), pixel size exactly `2**L` × native | trimmed | trimmed | rounded up, extent stretched (1 px larger per level) |
 | integer output | rounded to nearest | float64 whatever the input | truncated | rounded |
-| chunk / shard | `--tile-width` chunk, `--chunk-size` shard, `--sharding`, `--compressor` | `spatial_chunk` chunk; shard = whole level; `tile_width` only in the tile matrix set | chosen by it: 512 KB chunks, ≤ 4 per shard, snapped to the source chunking, zstd; `recommend_encoding` | `BLOCKSIZE` chunk, no shards (classic API), `COMPRESS` |
+| chunk / shard | `--chunk-size` chunk, `--shard-size` shard, `--sharding`, `--compressor` | `spatial_chunk` chunk; shard = whole level; `tile_width` only in the tile matrix set | chosen by it: 512 KB chunks, ≤ 4 per shard, snapped to the source chunking, zstd; `recommend_encoding` | `BLOCKSIZE` chunk, no shards (classic API), `COMPRESS` |
 | level layout | groups `0`, `1`, … with `data` | `<group>/0`, `1`, … | groups `0`, `1`, … | root array + `ovr_2x`, `ovr_4x`, … groups |
 | metadata | GeoZarr multiscales + tile matrix set, `spatial:*`, `proj:*`, CRS on every level | GeoZarr 0.4 multiscales + tile matrix set | zarr-conventions multiscales, `proj:*`, `spatial:*` | zarr-conventions multiscales only |
 | resume / validation | per-band validation, retry, failed batch rewritten (change 18) | per-band validation and retry | none (`mode="w"` truncates) | none |
@@ -611,15 +611,15 @@ layout (no chunk stored, every block is nodata, so nothing but the graph costs a
 | 262144² | 16384 | 1 024 | 5 210 | 0.23 GB | 28.2 GB | failed † |
 
 **Main-process memory ≈ 0.15 GB + 36–45 KB per level-0 shard task**, linear from 64 to
-65 536 tasks and independent of the pixel count (262144² at chunk 8192 costs what 131072² at
-chunk 4096 costs). agea4 at chunk 4096 is 553 × 535 × 4 = 1.18 M tasks: 45–55 GB before a
+65 536 tasks and independent of the pixel count (262144² at shard 8192 costs what 131072² at
+shard 4096 costs). agea4 at shard 4096 is 553 × 535 × 4 = 1.18 M tasks: 45–55 GB before a
 pixel is read. The reproduction on the real store (`memory_trace.py`, 30 GB cap) showed
 exactly that: the main process went from 0.5 GB to a 29 GB peak in 19 minutes of graph
 construction with the 8 workers flat at 1.1 GB, dask reported a 1.53 GiB serialized graph
 (72× the 21 MiB of the 16 384-task run), and the run was stopped. The workers' memory scales
 with the block instead: `workers × (base + k × chunk² × bands × itemsize)`.
 
-† At chunk 16384 the band-last read is a 1 GB (16384, 16384, 4) block per task before the
+† At shard 16384 the band-last read is a 1 GB (16384, 16384, 4) block per task before the
 transpose and the four band splits; the worker tree peaked at 28 GB against an automatic
 limit of 5.4 GB per worker, the batch write failed and so did the per-band retry (the run
 was logged at the quiet level, so the nanny's own messages are not in the file). 8192 is
@@ -631,7 +631,7 @@ the largest chunk that fits 8 workers of this input on 43 GB.
 shard, the time is in dask's `rechunk` tasks at 249 ms each (1 300 for 256 input blocks): the
 (4096, 4096, 4) block is transposed and split into four band blocks, each of which then goes
 through zarr's sharding codec on write. zarr itself reads a missing block in 25–31 ms; the
-write of an all-fill shard costs 162 ms at tile 256 (256 inner chunks), 69 ms at tile 512 and
+write of an all-fill shard costs 162 ms at chunk 256 (256 inner chunks), 69 ms at chunk 512 and
 1024, 80 ms unsharded, against 1.6 ms for the `any()` that proves it empty. Skipping the zarr
 write for all-nodata blocks (they are never stored anyway) brings the all-nodata run from
 50.2 s to 21.1 s, i.e. **0.35 s → 0.13 s per empty shard**.
@@ -641,7 +641,7 @@ On real data (`s3_window.py`, a data-dense 32768² window of agea4, 8 workers): 
 (4096, 4096, 4) block. MinIO delivers 107–112 MB/s to this box at 1, 8 or 16 streams, so the
 1.18 TB of stored data alone is a 3-hour floor.
 
-Projection for agea4 at chunk 4096, 8 workers, if the memory held: ~137 k data shard-bands
+Projection for agea4 at shard 4096, 8 workers, if the memory held: ~137 k data shard-bands
 × 2.8 s + ~1.05 M empty × 0.35 s ≈ 750 k worker-seconds ≈ 26 h; the empty shards are half
 of it, and the skip cuts them to 0.13 s (≈ 18 h).
 
@@ -653,7 +653,7 @@ of it, and the skip cuts them to 0.13 s (≈ 18 h).
   from the store. Not implemented.
 - Skip the zarr write for all-nodata level-0 blocks (three lines in `_write_and_reduce`),
   worth ~8 h on this raster. Not implemented.
-- Until then: `--chunk-size 8192` quarters the graph (≈ 12 GB main process on agea4) and
+- Until then: `--shard-size 8192` quarters the graph (≈ 12 GB main process on agea4) and
   fits the workers; 16384 does not on 43 GB with a band-last input.
 - The read side is bound by the MinIO link; more workers would not read faster.
 
@@ -668,7 +668,7 @@ throughout (load average 6–15), so wall times are noisier than the references.
 | 32768² window, 8 processes | 18.9 s (quiet) / 16.9 s (same-conditions) | 20.5 s / 16.1 s | output = baseline at 8 levels |
 | 32768² window, 8 threads | 34.8 s (quiet) | 38.7 s | |
 | full Italy, 8 processes | 367 s (quiet) / 534 s (same afternoon) | 379 s | output = baseline at all 10 levels, 5710 tasks over 4 windows |
-| 262144² × 4 bands, chunk 4096, metadata-only | 846 s, main process 0.80 GB | 352 s, **main process 0.27 GB** | 16 384 shard tasks in 16 windows |
+| 262144² × 4 bands, shard 4096, metadata-only | 846 s, main process 0.80 GB | 352 s, **main process 0.27 GB** | 16 384 shard tasks in 16 windows |
 | 65536² × 4 bands, all nodata | 50.2 s, 3032 tasks | 20.9 s, 599 tasks | one task per four-band block, empty shards skip the codec |
 | agea4 32768² data window, MinIO | 98.7 s, 1519 tasks, 722 s worker time | 98.1 s, 622 tasks, 634 s worker time | bound by the MinIO read (5 s per 64 MB block) |
 

@@ -1,6 +1,6 @@
 """Run the upstream EOPF converter (eopf-geozarr, `.venv-eopf`) on a zarr input; print JSON metrics.
 
-    .venv-eopf/bin/python bench/tools/run_eopf.py --input in.zarr --output out.zarr --chunk-size 4096 --tile-width 256 --threads 8
+    .venv-eopf/bin/python bench/tools/run_eopf.py --input in.zarr --output out.zarr --shard-size 4096 --chunk-size 256 --threads 8
 
 The converter needs the data under a child group (a root-only tree writes nothing), so the
 input dataset is placed at /measurements and the pyramid lands under out.zarr/measurements/{0,1,..}.
@@ -24,8 +24,8 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
-    p.add_argument("--chunk-size", type=int, default=4096)
-    p.add_argument("--tile-width", type=int, default=256)
+    p.add_argument("--shard-size", type=int, default=4096, help="eopf spatial_chunk")
+    p.add_argument("--chunk-size", type=int, default=256, help="eopf tile_width")
     p.add_argument("--min-dimension", type=int, default=256)
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--quiet", action="store_true")
@@ -52,8 +52,8 @@ def main() -> None:
     t0 = time.perf_counter()
     err = None
     try:
-        create_geozarr_dataset(dt, ["/measurements"], a.output, spatial_chunk=a.chunk_size, min_dimension=a.min_dimension,
-                               tile_width=a.tile_width, max_retries=1, enable_sharding=True)
+        create_geozarr_dataset(dt, ["/measurements"], a.output, spatial_chunk=a.shard_size, min_dimension=a.min_dimension,
+                               tile_width=a.chunk_size, max_retries=1, enable_sharding=True)
     except Exception as e:  # noqa: BLE001
         err = f"{type(e).__name__}: {e}"
     wall = time.perf_counter() - t0

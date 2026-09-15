@@ -15,8 +15,8 @@ Key compliance features:
 Scaling design (see CHANGES.md):
 - one zarr store object is used for every read, write and attribute update
 - level N+1 is built from level N re-opened from the store, one dask block per shard
-- the dask block is derived from the shard (or spatial_chunk), never from the tile width
-- shards never exceed one slice on non-spatial dims, so task memory is bounded by spatial_chunk²
+- the dask block is derived from the shard (or shard_size), never from the tile width
+- shards never exceed one slice on non-spatial dims, so task memory is bounded by shard_size²
 - level pixel size is exactly 2**level times the native pixel size
 """
 
@@ -141,14 +141,14 @@ def _delete_prefix(store: StoreLike, path: str) -> None:
 def _dask_chunks_for(
     enc: Mapping[str, Any],
     dims: Sequence[Hashable],
-    spatial_chunk: int,
+    shard_size: int,
     source_chunks: Sequence[Sequence[int]] | None = None,
 ) -> dict[Hashable, int]:
     """
     Dask block for a variable, derived from its zarr encoding.
 
     Sharded: one block per shard, which zarr needs to write a shard in a single put
-    instead of a read-modify-write. Unsharded: spatial_chunk on y/x (a multiple of the
+    instead of a read-modify-write. Unsharded: shard_size on y/x (a multiple of the
     zarr chunk, so no rechunk is needed to align). A non-spatial dim is one slice per
     block, unless ``source_chunks`` shows the source holds all its slices (at most
     ``MAX_LEAD_PER_TASK``) in one block, e.g. a band-last (y, x, band) image: then the
@@ -159,7 +159,7 @@ def _dask_chunks_for(
     if shards:
         out = dict(zip(dims, shards))
     else:
-        out = {d: (spatial_chunk if d in SPATIAL_DIMS else 1) for d in dims}
+        out = {d: (shard_size if d in SPATIAL_DIMS else 1) for d in dims}
     if source_chunks is not None:
         for d, c in zip(dims, source_chunks):
             if d not in SPATIAL_DIMS and len(c) == 1 and c[0] <= MAX_LEAD_PER_TASK:
@@ -234,7 +234,7 @@ def _read_reduce_block(
     path: str,
     run_token: str,
     level_shape: tuple[int, ...],
-    spatial_chunk: int,
+    shard_size: int,
     fy: int,
     fx: int,
     method: str,
@@ -251,12 +251,12 @@ def _read_reduce_block(
     arr = _open_array_cached(store, path, run_token)
     nlead = len(level_shape) - 2
     by, bx = block_id[-2:]
-    y0, x0 = by * spatial_chunk, bx * spatial_chunk
-    th = min(spatial_chunk, level_shape[-2] - y0)
-    tw = min(spatial_chunk, level_shape[-1] - x0)
+    y0, x0 = by * shard_size, bx * shard_size
+    th = min(shard_size, level_shape[-2] - y0)
+    tw = min(shard_size, level_shape[-1] - x0)
     out = np.empty((1,) * nlead + (th, tw), dtype=out_dtype)
     lead_index = tuple(int(i) for i in block_id[:nlead])
-    step_y, step_x = max(1, spatial_chunk // fy), max(1, spatial_chunk // fx)
+    step_y, step_x = max(1, shard_size // fy), max(1, shard_size // fx)
     for qy in range(0, th, step_y):
         oh = min(step_y, th - qy)
         for qx in range(0, tw, step_x):
@@ -411,7 +411,7 @@ def _overview_arrays_from_store(
     data_vars: Sequence[Hashable],
     height: int,
     width: int,
-    spatial_chunk: int,
+    shard_size: int,
     method: str,
     nodata_value: float | None,
     run_token: str,
@@ -426,8 +426,8 @@ def _overview_arrays_from_store(
         lead_shape = tuple(int(n) for n in pv.shape[:-2])
         chunks = (
             *[(1,) * n for n in lead_shape],
-            _chunks_along(height, spatial_chunk),
-            _chunks_along(width, spatial_chunk),
+            _chunks_along(height, shard_size),
+            _chunks_along(width, shard_size),
         )
         arrays[var] = da.map_blocks(
             _read_reduce_block,
@@ -437,7 +437,7 @@ def _overview_arrays_from_store(
             path=_join_path(parent_path, str(var)),
             run_token=run_token,
             level_shape=(*lead_shape, height, width),
-            spatial_chunk=spatial_chunk,
+            shard_size=shard_size,
             fy=ph // height,
             fx=pw // width,
             method=method,
@@ -456,9 +456,9 @@ def create_geozarr_dataset(
     dt_input: xr.DataTree,
     groups: Iterable[str],
     output_path: str,
-    spatial_chunk: int = 4096,
+    shard_size: int = 4096,
     min_dimension: int = 256,
-    tile_width: int = 256,
+    chunk_size: int = 256,
     max_retries: int = 3,
     crs_groups: Iterable[str] | None = None,
     gcp_group: str | None = None,
@@ -481,12 +481,12 @@ def create_geozarr_dataset(
         List of group names to process as Geozarr datasets.
     output_path : str
         Output path for the Zarr store (local path or s3:// URL)
-    spatial_chunk : int, default 4096
+    shard_size : int, default 4096
         Shard size on y/x when sharding is enabled, and the dask block size on y/x
-        in every case. Must be a multiple of ``tile_width``.
+        in every case. Must be a multiple of ``chunk_size``.
     min_dimension : int, default 256
         Minimum dimension for overview levels
-    tile_width : int, default 256
+    chunk_size : int, default 256
         Zarr chunk size on y/x (the tile served to clients)
     max_retries : int, default 3
         Maximum number of retries for network operations
@@ -513,11 +513,11 @@ def create_geozarr_dataset(
     xr.DataTree
         DataTree containing the GeoZarr compliant data
     """
-    if tile_width <= 0 or spatial_chunk <= 0:
-        raise ValueError("tile_width and spatial_chunk must be positive")
-    if spatial_chunk % tile_width:
+    if chunk_size <= 0 or shard_size <= 0:
+        raise ValueError("chunk_size and shard_size must be positive")
+    if shard_size % chunk_size:
         raise ValueError(
-            f"spatial_chunk ({spatial_chunk}) must be a multiple of tile_width ({tile_width})"
+            f"shard_size ({shard_size}) must be a multiple of chunk_size ({chunk_size})"
         )
 
     dt = dt_input.copy()
@@ -540,9 +540,9 @@ def create_geozarr_dataset(
         geozarr_groups,
         store,
         compressor,
-        spatial_chunk,
+        shard_size,
         min_dimension,
-        tile_width,
+        chunk_size,
         max_retries,
         crs_groups,
         gcp_group,
@@ -634,9 +634,9 @@ def iterative_copy(
     geozarr_groups: dict[str, xr.Dataset],
     store: StoreLike,
     compressor: Any,
-    spatial_chunk: int = 4096,
+    shard_size: int = 4096,
     min_dimension: int = 256,
-    tile_width: int = 256,
+    chunk_size: int = 256,
     max_retries: int = 3,
     crs_groups: Iterable[str] | None = None,
     gcp_group: str | None = None,
@@ -658,7 +658,7 @@ def iterative_copy(
         Output store
     compressor : Any
         Compressor to use for encoding
-    spatial_chunk, min_dimension, tile_width, max_retries, crs_groups, gcp_group,
+    shard_size, min_dimension, chunk_size, max_retries, crs_groups, gcp_group,
     enable_sharding, method, nodata_value
         See :func:`create_geozarr_dataset`
 
@@ -675,11 +675,11 @@ def iterative_copy(
     reference_crs = None
 
     common_kwargs = dict(
-        spatial_chunk=spatial_chunk,
+        shard_size=shard_size,
         compressor=compressor,
         max_retries=max_retries,
         min_dimension=min_dimension,
-        tile_width=tile_width,
+        chunk_size=chunk_size,
         gcp_group=gcp_group,
         enable_sharding=enable_sharding,
         method=method,
@@ -732,7 +732,7 @@ def iterative_copy(
             print(
                 f"Writing group '{current_group_path}' with data variables to GeoZarr DataTree"
             )
-            encoding = _create_encoding(ds, compressor, spatial_chunk)
+            encoding = _create_encoding(ds, compressor, shard_size)
             _pin_grid_mapping(ds)
             ds.to_zarr(
                 store,
@@ -807,11 +807,11 @@ def write_geozarr_group(
     group_name: str,
     ds: xr.Dataset,
     store: StoreLike,
-    spatial_chunk: int = 4096,
+    shard_size: int = 4096,
     compressor: Any = None,
     max_retries: int = 3,
     min_dimension: int = 256,
-    tile_width: int = 256,
+    chunk_size: int = 256,
     gcp_group: str | None = None,
     enable_sharding: bool = False,
     method: str = "mean",
@@ -850,7 +850,7 @@ def write_geozarr_group(
 
     # Create encoding for all variables
     encoding = _create_geozarr_encoding(
-        ds, compressor, tile_width, spatial_chunk, enable_sharding
+        ds, compressor, chunk_size, shard_size, enable_sharding
     )
 
     _data_vars_to_check = [
@@ -863,15 +863,15 @@ def write_geozarr_group(
         if isinstance(ds[var].data, da.Array):
             ds[var] = ds[var].chunk(
                 _dask_chunks_for(
-                    encoding.get(var, {}), ds[var].dims, spatial_chunk, ds[var].data.chunks
+                    encoding.get(var, {}), ds[var].dims, shard_size, ds[var].data.chunks
                 )
             )
 
-    geometry = _pyramid_geometry(ds, group_name, min_dimension, tile_width, None)
+    geometry = _pyramid_geometry(ds, group_name, min_dimension, chunk_size, None)
 
     # Write native data in the group 0 (overview level 0)
     level0_path = _join_path(group_path, 0)
-    existing_native_dataset = _load_existing_dataset(store, level0_path, spatial_chunk)
+    existing_native_dataset = _load_existing_dataset(store, level0_path, shard_size)
 
     if (
         _is_level_complete(existing_native_dataset, _data_vars_to_check)
@@ -916,7 +916,7 @@ def write_geozarr_group(
                         data_arrays=arrays,
                     )
                     ov, enc1 = _prepare_overview_for_write(
-                        ov, 1, spatial_chunk, compressor, tile_width, enable_sharding
+                        ov, 1, shard_size, compressor, chunk_size, enable_sharding
                     )
                     return level1_path, ov, enc1
 
@@ -932,7 +932,7 @@ def write_geozarr_group(
             encoding,
             max_retries,
             level0_path,
-            spatial_chunk,
+            shard_size,
             False,
             fused_level=fused_level,
             window_shards=window_shards,
@@ -955,8 +955,8 @@ def write_geozarr_group(
             store=store,
             group_name=group_name,
             min_dimension=min_dimension,
-            tile_width=tile_width,
-            spatial_chunk=spatial_chunk,
+            chunk_size=chunk_size,
+            shard_size=shard_size,
             ds_gcp=ds_gcp,
             enable_sharding=enable_sharding,
             method=method,
@@ -980,7 +980,7 @@ def _pyramid_geometry(
     ds: xr.Dataset,
     group_name: str,
     min_dimension: int,
-    tile_width: int,
+    chunk_size: int,
     ds_gcp: xr.Dataset | None,
 ) -> _PyramidGeometry | None:
     """Native extent, pixel size and the overview levels of a group; None without data."""
@@ -1039,7 +1039,7 @@ def _pyramid_geometry(
 
     # Calculate overview levels
     overview_levels = calculate_overview_levels(
-        native_width, native_height, min_dimension, tile_width
+        native_width, native_height, min_dimension, chunk_size
     )
 
     return _PyramidGeometry(
@@ -1056,18 +1056,18 @@ def _pyramid_geometry(
 def _prepare_overview_for_write(
     overview_ds: xr.Dataset,
     level: int,
-    spatial_chunk: int,
+    shard_size: int,
     compressor: Any,
-    tile_width: int,
+    chunk_size: int,
     enable_sharding: bool,
 ) -> tuple[xr.Dataset, dict[Hashable, XarrayEncodingJSON]]:
     """One block per shard, encoding, north-up check, transform and grid_mapping pinned."""
-    chunks: dict[Hashable, int] = {"x": spatial_chunk, "y": spatial_chunk}
+    chunks: dict[Hashable, int] = {"x": shard_size, "y": shard_size}
     chunks.update({dim: 1 for dim in overview_ds.dims if dim not in SPATIAL_DIMS})
     overview_ds = overview_ds.chunk(chunks)
 
     encoding = _create_geozarr_encoding(
-        overview_ds, compressor, tile_width, spatial_chunk, enable_sharding
+        overview_ds, compressor, chunk_size, shard_size, enable_sharding
     )
 
     # Ensure north-up / west-east convention before writing and update the
@@ -1090,8 +1090,8 @@ def create_geozarr_compliant_multiscales(
     store: StoreLike,
     group_name: str,
     min_dimension: int = 256,
-    tile_width: int = 256,
-    spatial_chunk: int = 4096,
+    chunk_size: int = 256,
+    shard_size: int = 4096,
     ds_gcp: xr.Dataset | None = None,
     enable_sharding: bool = False,
     method: str = "mean",
@@ -1119,7 +1119,7 @@ def create_geozarr_compliant_multiscales(
 
     g = geometry
     if g is None:
-        g = _pyramid_geometry(ds, group_name, min_dimension, tile_width, ds_gcp)
+        g = _pyramid_geometry(ds, group_name, min_dimension, chunk_size, ds_gcp)
     if g is None:
         return {}
     data_vars = g.data_vars
@@ -1140,7 +1140,7 @@ def create_geozarr_compliant_multiscales(
     tile_matrix_set = create_native_crs_tile_matrix_set(
         native_crs, native_bounds, overview_levels, None, native_px=native_px
     )
-    tile_matrix_limits = _create_tile_matrix_limits(overview_levels, tile_width)
+    tile_matrix_limits = _create_tile_matrix_limits(overview_levels, chunk_size)
 
     # Build GeoZarr official multiscales layout (https://github.com/zarr-conventions/multiscales)
     # Always north-up (descending y, e < 0) so that rasterio.windows.from_bounds()
@@ -1208,7 +1208,7 @@ def create_geozarr_compliant_multiscales(
 
     # Read level 0 from the store: one dask block per shard, no link to the input graph.
     level_0_path = _join_path(group_path, 0)
-    previous_level_ds = _load_existing_dataset(store, level_0_path, spatial_chunk)
+    previous_level_ds = _load_existing_dataset(store, level_0_path, shard_size)
     previous_level_path: str | None = level_0_path
     if previous_level_ds is None:
         previous_level_ds = ds
@@ -1226,7 +1226,7 @@ def create_geozarr_compliant_multiscales(
 
         # Check if this overview level already exists in the store
         level_path = _join_path(group_path, level)
-        _existing_level_ds = _load_existing_dataset(store, level_path, spatial_chunk)
+        _existing_level_ds = _load_existing_dataset(store, level_path, shard_size)
         if _is_level_complete(_existing_level_ds, data_vars) and _is_level_valid(
             _existing_level_ds
         ):
@@ -1258,7 +1258,7 @@ def create_geozarr_compliant_multiscales(
         # store one at a time (no 2x2 block merge), or from the in-memory parent when the
         # previous level is not on the store.
         data_arrays = None
-        n_blocks = -(-height // spatial_chunk) * -(-width // spatial_chunk)
+        n_blocks = -(-height // shard_size) * -(-width // shard_size)
         if previous_level_path is not None and n_blocks >= MIN_BLOCKS_FROM_STORE:
             data_arrays = _overview_arrays_from_store(
                 store,
@@ -1267,7 +1267,7 @@ def create_geozarr_compliant_multiscales(
                 data_vars,
                 height,
                 width,
-                spatial_chunk,
+                shard_size,
                 method,
                 nodata_value,
                 run_token,
@@ -1288,7 +1288,7 @@ def create_geozarr_compliant_multiscales(
             data_arrays=data_arrays,
         )
         overview_ds, encoding = _prepare_overview_for_write(
-            overview_ds, level, spatial_chunk, compressor, tile_width, enable_sharding
+            overview_ds, level, shard_size, compressor, chunk_size, enable_sharding
         )
 
         # Write overview level: one dask block per shard, one compute per level
@@ -1323,7 +1323,7 @@ def create_geozarr_compliant_multiscales(
         print(f"  ✅ Metadata consolidated for overview level {level}")
 
         # Re-open the just-written level to break the lazy chain back to level 0.
-        previous_level_ds = _load_existing_dataset(store, level_path, spatial_chunk)
+        previous_level_ds = _load_existing_dataset(store, level_path, shard_size)
         if previous_level_ds is None:
             print(
                 f"  ⚠️ Could not reload level {level} from the store, using in-memory dataset"
@@ -1356,7 +1356,7 @@ def calculate_overview_levels(
     native_width: int,
     native_height: int,
     min_dimension: int = 256,
-    tile_width: int = 256,
+    chunk_size: int = 256,
 ) -> list[OverviewLevelJSON]:
     """
     Calculate overview levels following COG /2 downsampling logic.
@@ -1373,8 +1373,8 @@ def calculate_overview_levels(
 
     while min(current_width, current_height) >= min_dimension:
         # Calculate zoom level for TMS compatibility
-        zoom_for_width = max(0, int(np.ceil(np.log2(current_width / tile_width))))
-        zoom_for_height = max(0, int(np.ceil(np.log2(current_height / tile_width))))
+        zoom_for_width = max(0, int(np.ceil(np.log2(current_width / chunk_size))))
+        zoom_for_height = max(0, int(np.ceil(np.log2(current_height / chunk_size))))
         zoom = max(zoom_for_width, zoom_for_height)
 
         overview_level: dict[str, Any] = {
@@ -1430,9 +1430,9 @@ def create_native_crs_tile_matrix_set(
         scale_denominator = cell_size * 3779.5275
 
         # Calculate matrix dimensions
-        tile_width = overview["chunks"][1][0] if "chunks" in overview else 256
+        chunk_size = overview["chunks"][1][0] if "chunks" in overview else 256
         tile_height = overview["chunks"][0][0] if "chunks" in overview else 256
-        matrix_width = int(np.ceil(width / tile_width))
+        matrix_width = int(np.ceil(width / chunk_size))
         matrix_height = int(np.ceil(height / tile_height))
 
         matrix_id = f"{group_prefix}/{level}" if group_prefix else str(level)
@@ -1443,7 +1443,7 @@ def create_native_crs_tile_matrix_set(
                 "scaleDenominator": scale_denominator,
                 "cellSize": cell_size,
                 "pointOfOrigin": [left, top],
-                "tileWidth": tile_width,
+                "tileWidth": chunk_size,
                 "tileHeight": tile_height,
                 "matrixWidth": matrix_width,
                 "matrixHeight": matrix_height,
@@ -1568,7 +1568,7 @@ def create_overview_dataset_all_vars(
             if not isinstance(data, da.Array):
                 data = da.from_array(data, chunks="auto")
             if data.ndim > 2:
-                # one slice per block on non-spatial dims: task memory stays spatial_chunk²
+                # one slice per block on non-spatial dims: task memory stays shard_size²
                 data = data.rechunk({i: 1 for i in range(data.ndim - 2)})
             downsampled_data = utils.downsample_2d_array(
                 data,
@@ -1709,7 +1709,7 @@ def write_dataset_band_by_band_with_validation(
     encoding: dict[Hashable, XarrayEncodingJSON],
     max_retries: int,
     group_name: str,
-    spatial_chunk: int = 4096,
+    shard_size: int = 4096,
     force_overwrite: bool = False,
     fused_level: tuple[str, dict[str, Any], Any] | None = None,
     window_shards: int | None = None,
@@ -1738,7 +1738,7 @@ def write_dataset_band_by_band_with_validation(
         Maximum number of attempts per band in the fallback path
     group_name : str
         Store-relative path of the level group (e.g. "0" or "measurements/0")
-    spatial_chunk : int
+    shard_size : int
         Dask block size on y/x for unsharded variables
     force_overwrite : bool, default False
         Force overwrite existing bands even if they're valid
@@ -1813,7 +1813,7 @@ def write_dataset_band_by_band_with_validation(
         var_enc = encoding.get(var, {})
         source_chunks = ds[var].data.chunks if isinstance(ds[var].data, da.Array) else None
         single_var_ds[var] = single_var_ds[var].chunk(
-            _dask_chunks_for(var_enc, single_var_ds[var].dims, spatial_chunk, source_chunks)
+            _dask_chunks_for(var_enc, single_var_ds[var].dims, shard_size, source_chunks)
         )
         # Drop on-disk chunk hints inherited from the source; keep the CRS reference.
         single_var_ds[var].encoding = {k: v for k, v in enc.items() if k == "grid_mapping"}
@@ -2057,7 +2057,7 @@ def _find_reference_crs(geozarr_groups: Mapping[str, xr.Dataset]) -> str | None:
 
 
 def _create_encoding(
-    ds: xr.Dataset, compressor: Any, spatial_chunk: int
+    ds: xr.Dataset, compressor: Any, shard_size: int
 ) -> dict[Hashable, XarrayEncodingJSON]:
     """Create encoding for (non-GeoZarr) dataset variables."""
     encoding: dict[Hashable, XarrayEncodingJSON] = {}
@@ -2072,14 +2072,14 @@ def _create_encoding(
         else:
             data_shape = ds[var].shape
             if len(data_shape) >= 2:
-                chunk_y = min(spatial_chunk, data_shape[-2])
-                chunk_x = min(spatial_chunk, data_shape[-1])
+                chunk_y = min(shard_size, data_shape[-2])
+                chunk_x = min(shard_size, data_shape[-1])
                 if len(data_shape) == 3:
                     chunking = (1, chunk_y, chunk_x)
                 else:
                     chunking = (chunk_y, chunk_x)
             elif len(data_shape) == 1:
-                chunking = (min(spatial_chunk, data_shape[-1]),)
+                chunking = (min(shard_size, data_shape[-1]),)
             else:
                 chunking = ()
 
@@ -2099,17 +2099,17 @@ def _create_encoding(
 def _create_geozarr_encoding(
     ds: xr.Dataset,
     compressor: Any,
-    tile_width: int,
-    spatial_chunk: int,
+    chunk_size: int,
+    shard_size: int,
     enable_sharding: bool = False,
 ) -> dict[Hashable, XarrayEncodingJSON]:
     """
     Zarr encoding for a GeoZarr level.
 
-    Chunks are ``tile_width`` on y/x and 1 on any other dim, clipped to the array shape.
-    Shards (optional) are ``spatial_chunk`` on y/x and 1 on any other dim, always a
+    Chunks are ``chunk_size`` on y/x and 1 on any other dim, clipped to the array shape.
+    Shards (optional) are ``shard_size`` on y/x and 1 on any other dim, always a
     multiple of the chunk and never larger than the array, so task memory stays
-    bounded by spatial_chunk² regardless of the time/band extent.
+    bounded by shard_size² regardless of the time/band extent.
     """
     encoding: dict[Hashable, XarrayEncodingJSON] = {}
 
@@ -2125,8 +2125,8 @@ def _create_geozarr_encoding(
             encoding[var] = {"compressors": None}
             continue
 
-        base_chunks = [tile_width if d in SPATIAL_DIMS else 1 for d in dims]
-        targets = [spatial_chunk if d in SPATIAL_DIMS else 1 for d in dims]
+        base_chunks = [chunk_size if d in SPATIAL_DIMS else 1 for d in dims]
+        targets = [shard_size if d in SPATIAL_DIMS else 1 for d in dims]
 
         chunks = []
         for axis in range(ndim):
@@ -2159,20 +2159,20 @@ def _create_geozarr_encoding(
 
 
 def _load_existing_dataset(
-    store: StoreLike, path: str, spatial_chunk: int | None = None
+    store: StoreLike, path: str, shard_size: int | None = None
 ) -> xr.Dataset | None:
     """
     Open a level group from the store, if it exists.
 
-    With ``spatial_chunk`` the dask block is that size on y/x (one block per shard)
+    With ``shard_size`` the dask block is that size on y/x (one block per shard)
     and one slice on any other dim; otherwise dask's "auto" chunking is used.
     """
     try:
         if not _node_exists(store, path):
             return None
         chunks: Any = "auto"
-        if spatial_chunk is not None:
-            chunks = {"y": spatial_chunk, "x": spatial_chunk}
+        if shard_size is not None:
+            chunks = {"y": shard_size, "x": shard_size}
         ds = xr.open_dataset(
             store,
             group=_group_or_none(path),
@@ -2189,14 +2189,14 @@ def _load_existing_dataset(
 
 
 def _create_tile_matrix_limits(
-    overview_levels: Iterable[OverviewLevelJSON], tile_width: int
+    overview_levels: Iterable[OverviewLevelJSON], chunk_size: int
 ) -> dict[str, TileMatrixLimitJSON]:
     """Create tile matrix limits for overview levels."""
     tile_matrix_limits: dict[str, TileMatrixLimitJSON] = {}
     for ol in overview_levels:
         level_str = str(ol["level"])
-        max_tile_col = int(np.ceil(ol["width"] / tile_width)) - 1
-        max_tile_row = int(np.ceil(ol["height"] / tile_width)) - 1
+        max_tile_col = int(np.ceil(ol["width"] / chunk_size)) - 1
+        max_tile_row = int(np.ceil(ol["height"] / chunk_size)) - 1
 
         tile_matrix_limits[level_str] = {
             "tileMatrix": level_str,

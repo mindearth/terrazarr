@@ -17,7 +17,7 @@ for C in 4096 8192; do
   for mode in "t8 1" "w8 8"; do set -- $mode; M=$1; W=$2
     echo "== minio window chunk $C $M $(date +%T)"
     .venv/bin/python bench/run_one.py --impl optimized --input "$WIN" --output "s3://test/geozzar-pyramid/win32k_c${C}_optimized${TAG}.zarr" \
-      --chunk-size "$C" --tile-width 256 --method mean --nodata 0 --sharding --threads 8 --workers "$W" --quiet \
+      --shard-size "$C" --chunk-size 256 --method mean --nodata 0 --sharding --threads 8 --workers "$W" --quiet \
       2> "$OUT/s3_win32k_c${C}${TAG}_$M.stderr" | tail -1 | tee "$OUT/s3_win32k_c${C}${TAG}_$M.json"
   done
 done
