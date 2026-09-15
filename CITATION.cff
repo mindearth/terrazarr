@@ -7,8 +7,8 @@ authors:
     given-names: Francesco
     affiliation: Mindearth
 license: Apache-2.0
-repository-code: "https://github.com/[ORG]/geozarr-pyramid"
-url: "https://[ORG].github.io/geozarr-pyramid"
+repository-code: "https://github.com/ORG-PLACEHOLDER/geozarr-pyramid"
+url: "https://ORG-PLACEHOLDER.github.io/geozarr-pyramid"
 abstract: >-
   A lazy, windowed and resumable writer of GeoZarr multiscale pyramids (zarr v3, sharded)
   that scales to rasters of millions of pixels a side with bounded memory. Derived from

@@ -1,7 +1,8 @@
 # Changes from the baseline
 
-Baseline: `me-geotools` `src/me_geotools/zarr_pyramid_v3` at commit `bd5ef00` (kept verbatim in
-`bench/baseline/`). Finding ids refer to the audit (L = laziness, H = hardware, D = input data).
+Baseline: the `eopf_geozarr.conversion.geozarr` module of [eopf-geozarr](https://github.com/EOPF-Explorer/data-model)
+(Development Seed for ESA, Apache-2.0), in the internal fork that added `method` and `nodata_value`
+to it; the public benchmark harness runs the published 0.7.1 as baseline. Finding ids refer to the audit (L = laziness, H = hardware, D = input data).
 
 | # | Change | Finding | Where |
 |---|---|---|---|

@@ -1,5 +1,6 @@
 """
-Run one implementation (baseline or optimized) on an input store and print JSON metrics.
+Run one implementation on an input store and print JSON metrics: ``optimized`` is this package,
+``baseline`` the upstream eopf-geozarr as published (run it with ``.venv-baseline/bin/python``).
 
 The input is a zarr store (local or s3://) or a GeoTIFF (striped or COG, local or s3://,
 read through rasterio; store counters then cover the output only).
@@ -140,16 +141,34 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=1, help="dask worker processes (>1: threads are split across them; store counters then cover the main process only)")
     args = p.parse_args()
 
+    import rioxarray  # noqa: F401
+    import xarray as xr
+    import zarr
+    from dask.distributed import Client, get_task_stream
+
     if args.impl == "baseline":
-        sys.path.insert(0, str(HERE / "baseline"))
-        from geozarr_baseline.geozarr import create_geozarr_dataset
-        from geozarr_baseline.store import get_zarr_store, set_spatial_info
+        # the upstream this project was forked from, as published (.venv-baseline, eopf-geozarr 0.7.1);
+        # it has no --method/--nodata (overviews are plain means) and wants the data under a child group
+        from eopf_geozarr.conversion.geozarr import create_geozarr_dataset as eopf_create
+
+        if args.method != "mean" or args.nodata is not None:
+            print(f"baseline: eopf-geozarr ignores --method {args.method} and --nodata {args.nodata}", file=sys.stderr)
+
+        def create_geozarr_dataset(dt, groups, output_path, shard_size, min_dimension, chunk_size, max_retries,
+                                   enable_sharding, method, nodata_value, **_):
+            dt = xr.DataTree.from_dict({"/measurements": dt.to_dataset()})
+            return eopf_create(dt, ["/measurements"], output_path, spatial_chunk=shard_size, min_dimension=min_dimension,
+                               tile_width=chunk_size, max_retries=max_retries, enable_sharding=enable_sharding)
+
+        def get_zarr_store(path, _profile=None):
+            return zarr.storage.LocalStore(path) if not path.startswith("s3://") else path
+
+        def set_spatial_info(ds):
+            ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
+            return ds if ds.rio.crs else ds.rio.write_crs("EPSG:4326")
     else:
         from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
         from geozarr_pyramid.store import get_zarr_store, set_spatial_info
-
-    import xarray as xr
-    from dask.distributed import Client, get_task_stream
 
     counters: Counter = Counter()
     instrument_stores(counters)

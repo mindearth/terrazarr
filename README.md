@@ -1,10 +1,9 @@
 # geozarr-pyramid
 
 GeoZarr multiscale pyramid writer (zarr v3, optional sharding), extracted from
-`me-geotools/src/me_geotools/zarr_pyramid_v3` and optimized for laziness and scale.
+`eopf_geozarr.conversion.geozarr` (Development Seed for ESA) and rewritten for laziness and scale.
 
 - `src/geozarr_pyramid/` the optimized module (`geozarr.py`, `utils.py`, `store.py`, `cli.py`)
-- `bench/baseline/geozarr_baseline/` the original module, verbatim except import paths, kept for comparison
 - `bench/` synthetic inputs, a per-run harness and a baseline-vs-optimized driver
 - `tests/` unit and end-to-end tests of the optimized module
 - `CHANGES.md` what changed and why, with the audit findings each change addresses
@@ -46,7 +45,7 @@ the level. Blocks without a valid pixel are skipped, which makes sparse rasters 
 
 ## Results
 
-Baseline is the original `zarr_pyramid_v3` module, run on the same inputs, machine (24 cores,
+Baseline is the module this project was forked from (eopf-geozarr with the method and nodata options of the internal fork, see "Reproducibility" in the benchmark docs), run on the same inputs, machine (24 cores,
 43 GB) and MinIO with the same settings (shard 4096 unless stated, chunk 256, sharding, 8 threads).
 Full tables, methods and the per-change history are in `bench/results.md` and `CHANGES.md`;
 the profile that motivated changes 12–17 is `bench/profile.md`; what the MinIO store delivers
@@ -234,12 +233,12 @@ source bench/s3env.sh                       # exports MinIO credentials from ~/r
 ```
 
 The baseline needs `botocore < 1.36` against this MinIO (newer botocore omits the `Content-MD5`
-header that MinIO requires on bulk deletes, which s3fs uses; me-geotools pins it for the same
+header that MinIO requires on bulk deletes, which s3fs uses; the upstream pins it for the same
 reason). Build it once and run the baseline with that interpreter:
 
 ```bash
 uv venv --python 3.11 .venv-baseline
-uv pip install --python .venv-baseline/bin/python -e . --group dev "s3fs==2024.12.0" "aiobotocore==2.15.2" "botocore<1.36"
+uv pip install --python .venv-baseline/bin/python "eopf-geozarr==0.7.1" "dask[distributed]" obstore rioxarray "s3fs==2024.12.0" "aiobotocore==2.15.2" "botocore<1.36"
 .venv-baseline/bin/python bench/run_one.py --impl baseline ...
 ```
 

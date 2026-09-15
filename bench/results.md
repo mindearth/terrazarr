@@ -68,7 +68,7 @@ threads per run: 4
 Input: a 32768×32768 float64 window (row 74000, col 78000) of `WSF3Dv3_Italy.tif`, extracted to a
 2048-chunked zarr on MinIO with `bench/tif_to_zarr.py`. Both implementations write to the same
 MinIO bucket with `--chunk-size 256 --method mean --nodata 0 --sharding --threads 8`.
-The baseline runs in `.venv-baseline` (botocore < 1.36, see README).
+The baseline runs in `.venv-baseline` (botocore < 1.36, see README). Every "baseline" number in this file was measured against the internal fork of eopf-geozarr that added `method` and `nodata_value` (the module this project started from); the published harness runs upstream 0.7.1, which always averages, so its overview values differ where nodata is involved (see "Other GeoZarr pyramid writers").
 
 ### shard 4096
 
