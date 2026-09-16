@@ -568,7 +568,7 @@ threads, input and output on local NVMe. The three variants differ only in how l
 
 | level 1 built by | wall [s] | dask tasks | chunk GETs | peak RSS [MB] |
 |---|---:|---:|---:|---:|
-| re-reading level 0 from the store (`GEOZARR_PYRAMID_FUSE_LEVEL_1=0`) | 43.9 | 125 | 453 | |
+| re-reading level 0 from the store (`TERRAZARR_FUSE_LEVEL_1=0`) | 43.9 | 125 | 453 | |
 | the level-0 dask blocks, second consumer (change 13) | 36.7 | 207 | 645 | |
 | the write task itself (change 17) | 28.9 | 140 | 389 | 2312 |
 
@@ -746,7 +746,7 @@ by `bench/tools/compare_any.py`, which pairs levels by shape whatever the group 
 
 ### How each writer works
 
-From the sources (`src/geozarr_pyramid`, `eopf_geozarr/conversion/geozarr.py` 0.7.1,
+From the sources (`src/terrazarr`, `eopf_geozarr/conversion/geozarr.py` 0.7.1,
 `topozarr/{pyramid,engine,coarsen}.py` 0.1.8, GDAL 3.13.2 Zarr driver and `gdaladdo`).
 
 | aspect | ours | eopf | topozarr | gdal |
@@ -931,7 +931,7 @@ throughout (load average 6–15), so wall times are noisier than the references.
   the same load (16.1 s against 16.9 s side by side on the window; 379 s against 534 s on full
   Italy the same afternoon, 367 s on main the day before on a quiet machine). Outputs are
   identical to the baseline at every level in both.
-- **Resume.** A run killed mid-way leaves `geozarr_pyramid:windows_done` on the level-0 group;
+- **Resume.** A run killed mid-way leaves `terrazarr:windows_done` on the level-0 group;
   the next run finishes the missing windows and does not touch the done ones
   (`tests/test_pipeline.py::test_window_failure_is_retried_then_resumed`). A level 0 without the
   completion flag is never taken as complete.

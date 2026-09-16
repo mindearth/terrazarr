@@ -56,8 +56,8 @@ def sampler(log: list, stop: threading.Event) -> None:
 def run(n: int, workers: int, chunk: int, workdir: str) -> dict:
     from dask.distributed import Client, get_task_stream
 
-    from geozarr_pyramid.geozarr import create_geozarr_dataset
-    from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+    from terrazarr.geozarr import create_geozarr_dataset
+    from terrazarr.store import get_zarr_store, set_spatial_info
 
     inp = os.path.join(workdir, f"scal_in_{n}.zarr"); out = os.path.join(workdir, f"scal_out_{n}.zarr")
     make_input(inp, n); shutil.rmtree(out, ignore_errors=True)

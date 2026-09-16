@@ -1,4 +1,4 @@
-# geozarr-pyramid
+# terrazarr
 
 GeoZarr multiscale pyramids for planetary-scale rasters: a lazy, windowed and resumable writer
 of zarr v3 stores with sharding, from a zarr or GeoTIFF input on disk or on S3.
@@ -35,7 +35,7 @@ instead of 430 602 for GDAL's pyramid of the same raster, and a main process tha
 ## Install
 
 ```bash
-pip install geozarr-pyramid
+pip install terrazarr
 ```
 
 or from a clone, with [uv](https://docs.astral.sh/uv/):
@@ -52,7 +52,7 @@ stores), `AWS_REGION` (optional).
 ## Use
 
 ```bash
-geozarr-pyramid --input in.zarr --output out.zarr \
+terrazarr --input in.zarr --output out.zarr \
   --chunk-size 256 --shard-size 4096 --sharding \
   --method mean --nodata 0 \
   --workers 8 --threads-per-worker 1 --memory-limit 4GB \
@@ -76,8 +76,8 @@ From Python:
 
 ```python
 import xarray as xr
-from geozarr_pyramid.geozarr import create_geozarr_dataset
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 ds = set_spatial_info(xr.open_dataset(get_zarr_store("in.zarr"), engine="zarr", chunks={"y": 4096, "x": 4096}))
 create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path="out.zarr",
@@ -128,7 +128,7 @@ the input-format study (striped GeoTIFF, COG, zarr) and the scaling law:
 
 ## Origin and license
 
-geozarr-pyramid is derived from `eopf_geozarr.conversion.geozarr` of
+terrazarr is derived from `eopf_geozarr.conversion.geozarr` of
 [EOPF-Explorer/data-model](https://github.com/EOPF-Explorer/data-model), Copyright 2025 European
 Space Agency (ESA), written by Development Seed, Apache License 2.0. The pipeline, the GeoZarr
 metadata layout and several function names are theirs; the changes are listed in

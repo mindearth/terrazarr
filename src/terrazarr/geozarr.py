@@ -44,9 +44,9 @@ from zarr.core.sync import sync
 from zarr.storage import StoreLike
 from zarr.storage._common import make_store_path
 
-from geozarr_pyramid import utils
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
-from geozarr_pyramid.types import (
+from terrazarr import utils
+from terrazarr.store import get_zarr_store, set_spatial_info
+from terrazarr.types import (
     OverviewLevelJSON,
     StandardXCoordAttrsJSON,
     StandardYCoordAttrsJSON,
@@ -83,22 +83,22 @@ GEOZARR_CONVENTIONS: list[dict[str, str]] = [
 
 SPATIAL_DIMS = ("y", "x")
 
-FUSE_LEVEL_1 = os.environ.get("GEOZARR_PYRAMID_FUSE_LEVEL_1", "1") != "0"
+FUSE_LEVEL_1 = os.environ.get("TERRAZARR_FUSE_LEVEL_1", "1") != "0"
 """Reduce level 1 from the level-0 blocks in the same compute as the level-0 write."""
 
-MIN_BLOCKS_FROM_STORE = int(os.environ.get("GEOZARR_PYRAMID_MIN_BLOCKS_FROM_STORE", "16"))
+MIN_BLOCKS_FROM_STORE = int(os.environ.get("TERRAZARR_MIN_BLOCKS_FROM_STORE", "16"))
 # Level 0 (and the fused level 1) is written in windows of this many dask blocks per axis, one
 # dask compute each, so the graph held by the client and scheduler is bounded by the window and
 # not by the raster (about 40 KB per block task). Must be even so that a window of level-0 shards
 # reduces onto whole level-1 shards.
-WINDOW_SHARDS = int(os.environ.get("GEOZARR_PYRAMID_WINDOW_SHARDS", "32"))
+WINDOW_SHARDS = int(os.environ.get("TERRAZARR_WINDOW_SHARDS", "32"))
 # A non-spatial dim (bands, time) of at most this many slices that the source holds in a single
 # block is kept whole in the dask block: one read, one transpose and one task write all slices,
 # instead of a dask rechunk that splits the block slice by slice.
-MAX_LEAD_PER_TASK = int(os.environ.get("GEOZARR_PYRAMID_MAX_LEAD_PER_TASK", "16"))
+MAX_LEAD_PER_TASK = int(os.environ.get("TERRAZARR_MAX_LEAD_PER_TASK", "16"))
 # Level-0 group attributes that record the windows written and the completion of the level.
-WINDOWS_DONE_ATTR = "geozarr_pyramid:windows_done"
-LEVEL_COMPLETE_ATTR = "geozarr_pyramid:level0_complete"
+WINDOWS_DONE_ATTR = "terrazarr:windows_done"
+LEVEL_COMPLETE_ATTR = "terrazarr:level0_complete"
 """Below this many output shards, an overview is reduced from the in-memory parent blocks
 (one task per parent shard) rather than one task per output shard, to keep parallelism."""
 

@@ -15,8 +15,8 @@ import rioxarray
 import xarray as xr
 from dask.distributed import Client
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
-from geozarr_pyramid.store import set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.store import set_spatial_info
 
 
 def main() -> None:

@@ -14,9 +14,9 @@ import time
 
 import xarray as xr
 
-from geozarr_pyramid.cli import get_dask_client
-from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.cli import get_dask_client
+from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 OUT = sys.argv[1]; LOG = sys.argv[2]; SRC = sys.argv[3] if len(sys.argv) > 3 else "s3://test/agea4.zarr"
 def sample(stop):

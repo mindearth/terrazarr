@@ -17,9 +17,9 @@ import xarray as xr
 import zarr
 from dask.distributed import Client
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
-from geozarr_pyramid.utils import reduce_block
+from terrazarr.geozarr import create_geozarr_dataset
+from terrazarr.store import get_zarr_store, set_spatial_info
+from terrazarr.utils import reduce_block
 
 
 def make_raster(path: Path, n: int = 2048, res: float = 10.0) -> None:
@@ -67,4 +67,4 @@ def main(out_dir: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="geozarr-pyramid-"))
+    main(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="terrazarr-"))

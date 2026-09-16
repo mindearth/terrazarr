@@ -1,3 +1,3 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MindEarth
-"""GeoZarr pyramid writer (geozarr_pyramid)."""
+"""GeoZarr pyramid writer (terrazarr)."""

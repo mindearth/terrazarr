@@ -1,8 +1,8 @@
-# geozarr-pyramid
+# terrazarr
 
 GeoZarr multiscale pyramids for planetary-scale rasters: a lazy, windowed and resumable writer
 of zarr v3 stores with sharding, from a zarr or GeoTIFF input on disk or on S3.
-Source, issues and releases: [github.com/mindearth/geozarr-pyramid](https://github.com/mindearth/geozarr-pyramid).
+Source, issues and releases: [github.com/mindearth/terrazarr](https://github.com/mindearth/terrazarr).
 
 ## Why this exists
 
@@ -36,13 +36,13 @@ instead of 430 602 for GDAL's pyramid of the same raster, and a main process tha
 ## Install
 
 ```bash
-pip install geozarr-pyramid
+pip install terrazarr
 ```
 
 ## Use
 
 ```bash
-geozarr-pyramid --input in.zarr --output out.zarr \
+terrazarr --input in.zarr --output out.zarr \
   --chunk-size 256 --shard-size 4096 --sharding \
   --method mean --nodata 0 \
   --workers 8 --threads-per-worker 1 --memory-limit 4GB \
@@ -66,8 +66,8 @@ From Python:
 
 ```python
 import xarray as xr
-from geozarr_pyramid.geozarr import create_geozarr_dataset
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 ds = set_spatial_info(xr.open_dataset(get_zarr_store("in.zarr"), engine="zarr", chunks={"y": 4096, "x": 4096}))
 create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path="out.zarr",
@@ -76,7 +76,7 @@ create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path="out.zarr",
 
 The output is a GeoZarr store: level groups `0`, `1`, … each with the data variables, `x`, `y`
 and `spatial_ref`, a `multiscales` attribute with the layout and a native-CRS tile matrix set
-on the root, consolidated metadata at every level. See [examples/](https://github.com/mindearth/geozarr-pyramid/tree/main/examples) for runnable
+on the root, consolidated metadata at every level. See [examples/](https://github.com/mindearth/terrazarr/tree/main/examples) for runnable
 scripts, including a synthetic raster that needs no download.
 
 ## Results at a glance

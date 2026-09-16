@@ -10,8 +10,8 @@ import os
 
 import xarray as xr
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 log = logging.getLogger(__name__)
 

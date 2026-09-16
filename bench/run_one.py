@@ -28,7 +28,7 @@ def count_objects(path: str) -> int:
     if path.startswith("s3://"):
         import obstore
 
-        from geozarr_pyramid.store import get_obstore
+        from terrazarr.store import get_obstore
 
         return sum(1 for _ in obstore.list(get_obstore(path)).collect())
     n = 0
@@ -41,7 +41,7 @@ def remove_output(path: str) -> None:
     if path.startswith("s3://"):
         import obstore
 
-        from geozarr_pyramid.store import get_obstore
+        from terrazarr.store import get_obstore
 
         st = get_obstore(path)
         keys = [o["path"] for o in obstore.list(st).collect()]
@@ -110,7 +110,7 @@ def provenance(impl: str) -> dict:
         commit = None
     return {
         "commit": commit,
-        "versions": {k: v(k) for k in ("geozarr-pyramid" if impl == "optimized" else "eopf-geozarr", "zarr", "dask", "xarray", "numpy", "obstore")},
+        "versions": {k: v(k) for k in ("terrazarr" if impl == "optimized" else "eopf-geozarr", "zarr", "dask", "xarray", "numpy", "obstore")},
         "python": platform.python_version(),
         "machine": {"cpus": os.cpu_count(), "platform": platform.platform()},
     }
@@ -193,8 +193,8 @@ def main() -> None:
             ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
             return ds if ds.rio.crs else ds.rio.write_crs("EPSG:4326")
     else:
-        from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
-        from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+        from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+        from terrazarr.store import get_zarr_store, set_spatial_info
 
     counters: Counter = Counter()
     instrument_stores(counters)

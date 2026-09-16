@@ -15,8 +15,8 @@ import zarr
 from fsspec.implementations.local import LocalFileSystem
 from s3fs import S3FileSystem
 
-from geozarr_pyramid.store import get_storage_options, get_zarr_store
-from geozarr_pyramid.types import S3Credentials, S3FsOptions
+from terrazarr.store import get_storage_options, get_zarr_store
+from terrazarr.types import S3Credentials, S3FsOptions
 
 
 def normalize_s3_path(s3_path: str) -> str:

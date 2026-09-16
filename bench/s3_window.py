@@ -16,8 +16,8 @@ import xarray as xr
 import zarr
 from dask.distributed import Client, get_task_stream
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 if __name__ == "__main__":
     n = int(sys.argv[1]); out = sys.argv[2]

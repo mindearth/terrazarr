@@ -21,7 +21,7 @@ import xarray as xr
 from rasterio.windows import Window
 from zarr.codecs import BloscCodec
 
-from geozarr_pyramid.store import get_zarr_store
+from terrazarr.store import get_zarr_store
 
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
 os.environ.setdefault("GDAL_HTTP_MERGE_CONSECUTIVE_RANGES", "YES")

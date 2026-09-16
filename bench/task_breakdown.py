@@ -18,8 +18,8 @@ import xarray as xr
 from dask.distributed import Client, get_task_stream
 from scaling import make_input  # noqa: E402
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 if __name__ == "__main__":
     n = int(sys.argv[1]); chunk = 4096

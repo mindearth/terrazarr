@@ -8,8 +8,8 @@ import zarr
 from rasterio.windows import from_bounds
 from synth import make_input
 
-from geozarr_pyramid import geozarr, utils
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr import geozarr, utils
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 
 def _run(inp, out, **kw):
@@ -147,7 +147,7 @@ def test_fused_level1_store_levels_and_resume(tmp_path, dask_client, monkeypatch
 def test_pipeline_float_nan_nodata_and_compressor_none(tmp_path, dask_client):
     inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=256, dtype="float32", nodata=None)
     out = str(tmp_path / "out.zarr")
-    from geozarr_pyramid.geozarr import make_compressor
+    from terrazarr.geozarr import make_compressor
     _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", compressor=make_compressor("none"))
     arr = zarr.open_array(get_zarr_store(out), path="1/data", mode="r")
     assert arr.compressors == ()

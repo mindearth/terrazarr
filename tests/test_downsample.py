@@ -2,7 +2,7 @@ import dask.array as da
 import numpy as np
 import pytest
 
-from geozarr_pyramid import utils
+from terrazarr import utils
 
 
 def _ref_mean(a, nodata):

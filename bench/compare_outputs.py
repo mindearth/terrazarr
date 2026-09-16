@@ -18,7 +18,7 @@ import dask.array as da
 import xarray as xr
 import zarr
 
-from geozarr_pyramid.store import get_zarr_store
+from terrazarr.store import get_zarr_store
 
 
 def _open(path: str, level: int, chunk: int) -> xr.Dataset:

@@ -1,5 +1,5 @@
 [project]
-name = "geozarr-pyramid"
+name = "terrazarr"
 dynamic = ["version"]
 description = "GeoZarr multiscale pyramids for planetary-scale rasters: lazy, windowed, resumable (zarr v3, sharded)"
 readme = "README.md"
@@ -32,14 +32,14 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mindearth/geozarr-pyramid"
-Documentation = "https://mindearth.github.io/geozarr-pyramid"
-Changelog = "https://github.com/mindearth/geozarr-pyramid/blob/main/docs/changes.md"
-Issues = "https://github.com/mindearth/geozarr-pyramid/issues"
+Homepage = "https://github.com/mindearth/terrazarr"
+Documentation = "https://mindearth.github.io/terrazarr"
+Changelog = "https://github.com/mindearth/terrazarr/blob/main/docs/changes.md"
+Issues = "https://github.com/mindearth/terrazarr/issues"
 Upstream = "https://github.com/EOPF-Explorer/data-model"
 
 [project.scripts]
-geozarr-pyramid = "geozarr_pyramid.cli:main"
+terrazarr = "terrazarr.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]

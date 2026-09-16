@@ -1,14 +1,14 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "geozarr-pyramid: GeoZarr multiscale pyramids for planetary-scale rasters"
+title: "terrazarr: GeoZarr multiscale pyramids for planetary-scale rasters"
 type: software
 authors:
   - family-names: Asaro
     given-names: Francesco
     affiliation: MindEarth
 license: Apache-2.0
-repository-code: "https://github.com/mindearth/geozarr-pyramid"
-url: "https://mindearth.github.io/geozarr-pyramid"
+repository-code: "https://github.com/mindearth/terrazarr"
+url: "https://mindearth.github.io/terrazarr"
 abstract: >-
   A lazy, windowed and resumable writer of GeoZarr multiscale pyramids (zarr v3, sharded)
   that scales to rasters of millions of pixels a side with bounded memory. Derived from
