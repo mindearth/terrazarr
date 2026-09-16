@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Mindearth
+# Copyright 2026 MindEarth
 """Store helpers: obstore-backed zarr stores for local and s3:// paths, and the CRS setup.
 
 Credentials for s3:// paths come from the environment:

@@ -2,7 +2,7 @@
 
 GeoZarr multiscale pyramids for planetary-scale rasters: a lazy, windowed and resumable writer
 of zarr v3 stores with sharding, from a zarr or GeoTIFF input on disk or on S3.
-Source, issues and releases: [github.com/ORG-PLACEHOLDER/geozarr-pyramid](https://github.com/ORG-PLACEHOLDER/geozarr-pyramid).
+Source, issues and releases: [github.com/mindearth/geozarr-pyramid](https://github.com/mindearth/geozarr-pyramid).
 
 ## Why this exists
 
@@ -76,7 +76,7 @@ create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path="out.zarr",
 
 The output is a GeoZarr store: level groups `0`, `1`, … each with the data variables, `x`, `y`
 and `spatial_ref`, a `multiscales` attribute with the layout and a native-CRS tile matrix set
-on the root, consolidated metadata at every level. See [examples/](https://github.com/ORG-PLACEHOLDER/geozarr-pyramid/tree/main/examples) for runnable
+on the root, consolidated metadata at every level. See [examples/](https://github.com/mindearth/geozarr-pyramid/tree/main/examples) for runnable
 scripts, including a synthetic raster that needs no download.
 
 ## Results at a glance

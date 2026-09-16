@@ -1,6 +1,6 @@
 site_name: geozarr-pyramid
 site_description: GeoZarr multiscale pyramids for planetary-scale rasters
-repo_url: https://github.com/ORG-PLACEHOLDER/geozarr-pyramid
+repo_url: https://github.com/mindearth/geozarr-pyramid
 theme:
   name: material
   features: [navigation.sections, content.code.copy, toc.integrate]

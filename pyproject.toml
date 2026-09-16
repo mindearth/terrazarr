@@ -32,10 +32,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ORG-PLACEHOLDER/geozarr-pyramid"
-Documentation = "https://ORG-PLACEHOLDER.github.io/geozarr-pyramid"
-Changelog = "https://github.com/ORG-PLACEHOLDER/geozarr-pyramid/blob/main/docs/changes.md"
-Issues = "https://github.com/ORG-PLACEHOLDER/geozarr-pyramid/issues"
+Homepage = "https://github.com/mindearth/geozarr-pyramid"
+Documentation = "https://mindearth.github.io/geozarr-pyramid"
+Changelog = "https://github.com/mindearth/geozarr-pyramid/blob/main/docs/changes.md"
+Issues = "https://github.com/mindearth/geozarr-pyramid/issues"
 Upstream = "https://github.com/EOPF-Explorer/data-model"
 
 [project.scripts]

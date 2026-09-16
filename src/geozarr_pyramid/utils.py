@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Mindearth
+# Copyright 2026 MindEarth
 # Derived from eopf-geozarr (Development Seed for ESA), Copyright 2025 European Space Agency (ESA),
 # Apache-2.0: https://github.com/EOPF-Explorer/data-model
 """Utility functions for GeoZarr conversion."""

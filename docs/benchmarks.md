@@ -165,8 +165,8 @@ suites below write them.
 
 | placeholder | what | used by |
 |---|---|---|
-| `[DATA-1]` | `WSF3Dv3_Italy.tif`, 178335 × 200599 float64, striped GeoTIFF (World Settlement Footprint 3D, Italy) and its license | full-Italy and window suites, input-format runs, profile |
-| `[DATA-2]` | the 20 cm orthophoto zarr (2263040 × 2191360 × 4 uint8, band-last) | scaling study, MinIO study |
+| `[DATA-1]` | `WSF3Dv3_Italy.tif`, 178335 × 200599 float64, striped GeoTIFF (World Settlement Footprint 3D, Italy), CC BY 4.0; download location: `[DATA-1-URL]` | full-Italy and window suites, input-format runs, profile |
+| `[DATA-2]` | the 20 cm orthophoto zarr (2263040 × 2191360 × 4 uint8, band-last), CC BY 4.0; download location: `[DATA-2-URL]` | scaling study, MinIO study |
 | `[DATA-3]` | an S3-compatible endpoint with a writable bucket; the docs used a MinIO named by `AWS_ENDPOINT_URL` | every `s3://` run |
 
 Synthetic scenarios (`bench/compare.py`) need nothing external and are what CI runs.
