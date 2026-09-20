@@ -67,9 +67,9 @@ def gdal_env() -> None:
     os.environ.setdefault("CPL_VSIL_CURL_CACHE_SIZE", str(512 * 1024 * 1024))
 
 
-def open_geotiff(path: str, chunk_size: int):
+def open_geotiff(path: str, shard_size: int):
     """A GeoTIFF (striped or COG, local or s3://) as the same dataset the zarr input gives:
-    one variable ``data`` on (y, x) in ``chunk_size`` dask blocks, CRS on ``spatial_ref``.
+    one variable ``data`` on (y, x) in ``shard_size`` dask blocks, CRS on ``spatial_ref``.
 
     ``lock=False`` gives every dask thread its own GDAL handle, so tile decodes run in
     parallel; GDAL's block cache (``GDAL_CACHEMAX``, MB) is what makes a striped file
@@ -80,7 +80,7 @@ def open_geotiff(path: str, chunk_size: int):
     if path.startswith("s3://"):
         path = "/vsis3/" + path[len("s3://"):]
     da_ = rioxarray.open_rasterio(
-        path, chunks={"band": 1, "y": chunk_size, "x": chunk_size}, lock=False, masked=False,
+        path, chunks={"band": 1, "y": shard_size, "x": shard_size}, lock=False, masked=False,
     )
     da_ = da_.squeeze("band", drop=True)
     ds = da_.to_dataset(name="data")
@@ -128,8 +128,8 @@ def main() -> None:
     p.add_argument("--impl", choices=["baseline", "optimized"], required=True)
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
-    p.add_argument("--chunk-size", type=int, default=4096)
-    p.add_argument("--tile-width", type=int, default=256)
+    p.add_argument("--shard-size", type=int, default=4096)
+    p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--method", default="mean")
     p.add_argument("--nodata", type=float, default=None)
     p.add_argument("--sharding", action="store_true")
@@ -165,11 +165,11 @@ def main() -> None:
     remove_output(args.output)
 
     if args.input.lower().endswith((".tif", ".tiff")):
-        ds = open_geotiff(args.input, args.chunk_size)
+        ds = open_geotiff(args.input, args.shard_size)
     else:
         ds = xr.open_dataset(
             get_zarr_store(args.input), engine="zarr",
-            chunks={"y": args.chunk_size, "x": args.chunk_size}, consolidated=False,
+            chunks={"y": args.shard_size, "x": args.shard_size}, consolidated=False,
         )
     ds = set_spatial_info(ds)
     dt = xr.DataTree(ds)
@@ -184,7 +184,7 @@ def main() -> None:
     try:
         create_geozarr_dataset(
             dt, groups=["/"], output_path=args.output,
-            spatial_chunk=args.chunk_size, min_dimension=args.tile_width, tile_width=args.tile_width,
+            shard_size=args.shard_size, min_dimension=args.chunk_size, chunk_size=args.chunk_size,
             max_retries=1, enable_sharding=args.sharding, method=args.method, nodata_value=args.nodata,
             **extra,
         )

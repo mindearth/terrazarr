@@ -18,13 +18,13 @@ PY = sys.executable
 
 SCENARIOS = {
     "s1": dict(desc="2D uint8 16384², sharded 4096, min, nodata 0", shape=(16384, 16384), dtype="uint8",
-               args=["--chunk-size", "4096", "--tile-width", "256", "--method", "min", "--nodata", "0", "--sharding"]),
+               args=["--shard-size", "4096", "--chunk-size", "256", "--method", "min", "--nodata", "0", "--sharding"]),
     "s2": dict(desc="2D uint8 16384², unsharded, mean, nodata 0", shape=(16384, 16384), dtype="uint8",
-               args=["--chunk-size", "4096", "--tile-width", "256", "--method", "mean", "--nodata", "0"]),
+               args=["--shard-size", "4096", "--chunk-size", "256", "--method", "mean", "--nodata", "0"]),
     "s3": dict(desc="3D uint8 8×8192², sharded 4096, mean, nodata 0", shape=(8, 8192, 8192), dtype="uint8",
-               args=["--chunk-size", "4096", "--tile-width", "256", "--method", "mean", "--nodata", "0", "--sharding"]),
+               args=["--shard-size", "4096", "--chunk-size", "256", "--method", "mean", "--nodata", "0", "--sharding"]),
     "s4": dict(desc="2D float32 12288², sharded 4096, median", shape=(12288, 12288), dtype="float32",
-               args=["--chunk-size", "4096", "--tile-width", "256", "--method", "median", "--sharding"]),
+               args=["--shard-size", "4096", "--chunk-size", "256", "--method", "median", "--sharding"]),
 }
 
 METRICS = [
