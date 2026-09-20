@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full WSF3Dv3_Italy.tif (178335 x 200599 float64) -> zarr input -> GeoZarr pyramid on MinIO.
-#   IMPL=optimized|baseline   which module (baseline runs in .venv-baseline, see README)
+#   IMPL=optimized|baseline   this package, or upstream eopf-geozarr (runs in .venv-baseline, see README)
 #   EXTRACT=1|0               run the GeoTIFF -> zarr extract (0: reuse the input already on MinIO)
 #   THREADS, STRIP            dask threads; rows per extract strip
 #   ROOT                      store root for input and output (default MinIO; a local dir for a

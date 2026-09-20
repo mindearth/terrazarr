@@ -29,7 +29,7 @@ pyramid run. Dates are 2026-09-07 to 2026-09-11.
 
 ## Pyramid runs, MinIO against local NVMe
 
-From `bench/results.md` (optimized module, shard 4096, chunk 256, mean, sharding):
+From [benchmarks.md](benchmarks.md) (optimized module, shard 4096, chunk 256, mean, sharding):
 
 | run | local | MinIO | penalty |
 |---|---:|---:|---:|

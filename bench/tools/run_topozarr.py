@@ -31,10 +31,10 @@ def main() -> None:
 
     import shutil
 
+    import topozarr
     import xarray as xr
     import xproj  # noqa: F401
     import zarr
-    import topozarr
 
     shutil.rmtree(a.output, ignore_errors=True)
     ds = xr.open_zarr(a.input, chunks=None, consolidated=False)

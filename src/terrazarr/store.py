@@ -1,4 +1,6 @@
-"""Store helpers vendored from me_geotools.utils.{zarr,s3}, without private dependencies.
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MindEarth
+"""Store helpers: obstore-backed zarr stores for local and s3:// paths, and the CRS setup.
 
 Credentials for s3:// paths come from the environment:
 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL (optional), AWS_REGION (optional).

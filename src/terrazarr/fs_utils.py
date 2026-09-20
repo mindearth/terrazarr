@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MindEarth
+# Derived from eopf-geozarr (Development Seed for ESA), Copyright 2025 European Space Agency (ESA),
+# Apache-2.0: https://github.com/EOPF-Explorer/data-model
 """S3 utilities for GeoZarr conversion."""
 
 import json
@@ -11,9 +15,8 @@ import zarr
 from fsspec.implementations.local import LocalFileSystem
 from s3fs import S3FileSystem
 
-from geozarr_baseline.store import get_storage_options
-from geozarr_baseline.store import get_zarr_store
-from geozarr_baseline.types import S3Credentials, S3FsOptions
+from terrazarr.store import get_storage_options, get_zarr_store
+from terrazarr.types import S3Credentials, S3FsOptions
 
 
 def normalize_s3_path(s3_path: str) -> str:
@@ -265,7 +268,6 @@ def open_s3_zarr_group(s3_path: str, mode: str = "r", **s3_kwargs: Any) -> zarr.
     zarr.Group
         Zarr group
     """
-    storage_options = get_storage_options(s3_path).get("storage_options", {})
     return zarr.open_group(
         get_zarr_store(s3_path),
         mode=mode,
@@ -459,7 +461,6 @@ def open_zarr_group(path: str, mode: str = "r", **kwargs: Any) -> zarr.Group:
     zarr.Group
         Zarr group
     """
-    storage_options = get_storage_options(path, **kwargs).get("storage_options", {})
     return zarr.open_group(
         get_zarr_store(path),
         mode=mode,

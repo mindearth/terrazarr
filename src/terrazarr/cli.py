@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MindEarth
 """Command line entry point: build a GeoZarr pyramid from a zarr input."""
 
 from __future__ import annotations
@@ -8,8 +10,8 @@ import os
 
 import xarray as xr
 
-from geozarr_pyramid.geozarr import create_geozarr_dataset, make_compressor
-from geozarr_pyramid.store import get_zarr_store, set_spatial_info
+from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.store import get_zarr_store, set_spatial_info
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +27,7 @@ def get_dask_client(
     Connects through dask-gateway when DASK_GATEWAY_URL and DASK_GATEWAY_PASSWORD
     are set, otherwise starts a local cluster. Threads per worker and the memory
     limit are the two levers that trade concurrency against peak memory; the
-    reduction holds roughly one shard per thread (see CHANGES.md, H1).
+    reduction holds roughly one shard per thread (see docs/changes.md, H1).
     """
     gateway_url = os.environ.get("DASK_GATEWAY_URL")
     gateway_password = os.environ.get("DASK_GATEWAY_PASSWORD")

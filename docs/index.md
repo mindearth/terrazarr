@@ -2,6 +2,7 @@
 
 GeoZarr multiscale pyramids for planetary-scale rasters: a lazy, windowed and resumable writer
 of zarr v3 stores with sharding, from a zarr or GeoTIFF input on disk or on S3.
+Source, issues and releases: [github.com/mindearth/terrazarr](https://github.com/mindearth/terrazarr).
 
 ## Why this exists
 
@@ -30,24 +31,13 @@ rewrite of that pipeline for that scale, keeping its metadata layout and its fun
 The result: full Italy in 6 minutes on 8 processes against 22 for the original, 2178 objects
 instead of 430 602 for GDAL's pyramid of the same raster, and a main process that stays under
 1 GB on the orthophoto where the one-graph design needed 70 GB. Numbers and methods are in
-[docs/benchmarks.md](docs/benchmarks.md).
+[benchmarks](benchmarks.md).
 
 ## Install
 
 ```bash
 pip install terrazarr
 ```
-
-or from a clone, with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python -e . --group dev
-```
-
-Credentials for `s3://` paths come from the environment: `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL` (optional, for MinIO and other S3-compatible
-stores), `AWS_REGION` (optional).
 
 ## Use
 
@@ -86,7 +76,7 @@ create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path="out.zarr",
 
 The output is a GeoZarr store: level groups `0`, `1`, … each with the data variables, `x`, `y`
 and `spatial_ref`, a `multiscales` attribute with the layout and a native-CRS tile matrix set
-on the root, consolidated metadata at every level. See [examples/](examples/) for runnable
+on the root, consolidated metadata at every level. See [examples/](https://github.com/mindearth/terrazarr/tree/main/examples) for runnable
 scripts, including a synthetic raster that needs no download.
 
 ## Results at a glance
@@ -116,23 +106,19 @@ Against other GeoZarr pyramid writers on full Italy, 10 levels, local NVMe:
 Memory on the orthophoto (1.18 M level-0 shard tasks): the one-graph design needed 45–55 GB in
 the main process; windowed, it needs less than 1 GB. Full tables, the writer characteristics,
 the input-format study (striped GeoTIFF, COG, zarr) and the scaling law:
-[docs/benchmarks.md](docs/benchmarks.md).
+[benchmarks](benchmarks.md).
 
-## Documentation
+## In these pages
 
-- [docs/benchmarks.md](docs/benchmarks.md): every measurement, how to reproduce it; inputs and references are public (`bench/fetch_data.py`)
-- [docs/changes.md](docs/changes.md): the 21 changes against the original, with the finding each one addresses
-- [docs/profile.md](docs/profile.md): the py-spy profile that motivated changes 12–17
-- [docs/minio.md](docs/minio.md): what an S3-compatible store delivers and what it costs a run
-- [docs/testing.md](docs/testing.md): the test suite
+- [Benchmarks](benchmarks.md): every measurement, how to reproduce it; inputs and references are public (`bench/fetch_data.py`)
+- [Changes against the original](changes.md): the 21 changes, with the finding each one addresses
+- [Profile](profile.md): the py-spy profile that motivated changes 12–17
+- [S3 and MinIO](minio.md): what an S3-compatible store delivers and what it costs a run
+- [Tests](testing.md): the test suite
 
 ## Origin and license
 
-terrazarr is derived from `eopf_geozarr.conversion.geozarr` of
+Derived from `eopf_geozarr.conversion.geozarr` of
 [EOPF-Explorer/data-model](https://github.com/EOPF-Explorer/data-model), Copyright 2025 European
-Space Agency (ESA), written by Development Seed, Apache License 2.0. The pipeline, the GeoZarr
-metadata layout and several function names are theirs; the changes are listed in
-[docs/changes.md](docs/changes.md) and credited in [NOTICE](NOTICE).
-
-This project is licensed under the Apache License 2.0, see [LICENSE](LICENSE). Cite it with
-[CITATION.cff](CITATION.cff).
+Space Agency (ESA), written by Development Seed, Apache License 2.0. This project is licensed
+under the Apache License 2.0.
