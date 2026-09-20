@@ -22,7 +22,7 @@ for store in local minio; do
       echo "== $store $input $M $(date +%T)"
       GDAL_CACHEMAX=$CACHE /usr/bin/time -f 'time: wall=%e cpu=%P maxrss=%MKB' \
         .venv/bin/python bench/run_one.py --impl optimized --input "$IN" --output "$DST" \
-        --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads 8 --workers "$W" --quiet \
+        --shard-size 4096 --chunk-size 256 --method mean --nodata 0 --sharding --threads 8 --workers "$W" --quiet \
         2> "$OUT/inputs_win32k_${store}_${input}_$M.stderr" | tail -1 | tee "$OUT/inputs_win32k_${store}_${input}_$M.json"
       grep "^time:" "$OUT/inputs_win32k_${store}_${input}_$M.stderr" || true
     done

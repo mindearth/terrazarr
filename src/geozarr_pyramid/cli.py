@@ -60,11 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create GeoZarr dataset from Zarr input.")
     parser.add_argument("--input", required=True, help="Input Zarr path (local or s3://...)")
     parser.add_argument("--output", required=True, help="Output GeoZarr path (local or s3://...)")
+    parser.add_argument("--chunk-size", type=int, default=256, help="Zarr chunk size on y/x")
     parser.add_argument(
-        "--chunk-size", type=int, default=4096,
-        help="Shard size on y/x (with --sharding) and dask block size on y/x; multiple of --tile-width",
+        "--shard-size", type=int, default=4096,
+        help="Zarr shard size on y/x with --sharding, and the dask block size on y/x in every case; "
+        "a multiple of --chunk-size",
     )
-    parser.add_argument("--tile-width", type=int, default=256, help="Zarr chunk size on y/x")
     parser.add_argument(
         "--method", default="min", choices=["mean", "min", "max", "median", "nearest"],
         help="Resampling method for pyramid levels",
@@ -84,9 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--threads-per-worker", type=int, default=1,
-        help="Threads per Dask worker; task memory is workers × threads × chunk-size² × itemsize × 2",
+        help="Threads per Dask worker; task memory is workers × threads × shard-size² × itemsize × 2",
     )
     parser.add_argument("--memory-limit", default="auto", help='Memory limit per worker, e.g. "12GB"')
+    parser.add_argument(
+        "--window-shards", type=int, default=None,
+        help="Level 0 is written in windows of this many blocks per axis, one dask compute each "
+        "(default 32, even): the graph in the main process is bounded by the window, about "
+        "40 KB per block task, instead of growing with the raster",
+    )
     return parser
 
 
@@ -103,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
     ds = xr.open_dataset(
         get_zarr_store(args.input, args.s3_profile),
         engine="zarr",
-        chunks={"y": args.chunk_size, "x": args.chunk_size},
+        chunks={"y": args.shard_size, "x": args.shard_size},
     )
     ds = set_spatial_info(ds)
     dt = xr.DataTree(ds)
@@ -113,15 +120,16 @@ def main(argv: list[str] | None = None) -> None:
             dt,
             groups=["/"],
             output_path=args.output,
-            spatial_chunk=args.chunk_size,
-            min_dimension=args.tile_width,
-            tile_width=args.tile_width,
+            shard_size=args.shard_size,
+            min_dimension=args.chunk_size,
+            chunk_size=args.chunk_size,
             max_retries=3,
             enable_sharding=args.sharding,
             method=args.method,
             nodata_value=args.nodata,
             s3_profile=args.s3_profile,
             compressor=make_compressor(args.compressor, args.clevel),
+            window_shards=args.window_shards,
         )
     finally:
         client.close()

@@ -19,7 +19,7 @@ run() { # store input layout workers cache timeout
   echo "== $store $input $M $(date +%T)"
   GDAL_CACHEMAX=$CACHE timeout "$T" /usr/bin/time -f 'time: wall=%e cpu=%P maxrss=%MKB' \
     .venv/bin/python bench/run_one.py --impl optimized --input "$IN" --output "$DST" \
-    --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads 8 --workers "$W" --quiet \
+    --shard-size 4096 --chunk-size 256 --method mean --nodata 0 --sharding --threads 8 --workers "$W" --quiet \
     2> "$OUT/inputs_full_${store}_${input}_$M.stderr" | tail -1 | tee "$OUT/inputs_full_${store}_${input}_$M.json"
   echo "exit=$? $(grep '^time:' "$OUT/inputs_full_${store}_${input}_$M.stderr" || echo 'time: (killed by timeout)')"
 }

@@ -29,6 +29,6 @@ if [ "$EXTRACT" = 1 ]; then
 fi
 echo "== pyramid $IMPL $(date +%T)"
 "$PY" bench/run_one.py --impl "$IMPL" --input "$IN" --output "$OUT" \
-  --chunk-size 4096 --tile-width 256 --method mean --nodata 0 --sharding --threads "$THREADS" --workers "$WORKERS" --quiet \
+  --shard-size 4096 --chunk-size 256 --method mean --nodata 0 --sharding --threads "$THREADS" --workers "$WORKERS" --quiet \
   2> "bench/out/italy_full_${IMPL}${TAG}.stderr" | tail -1 | tee "bench/out/italy_full_${IMPL}${TAG}.json"
 echo "== done $(date +%T)"
