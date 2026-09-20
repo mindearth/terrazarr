@@ -1,0 +1,12 @@
+name: Build and Publish Docker Container to AWS ECR
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+jobs:
+  ci-cd:
+    uses: mindearth/dev-ops/.github/workflows/docker-build-and-push-ecr.yml@main
+    secrets: inherit

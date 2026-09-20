@@ -12,3 +12,4 @@ bench/data/
 .venv-eopf/
 .venv-topozarr/
 site/
+.env

@@ -29,6 +29,7 @@ dependencies = [
     "fsspec>=2024.1",
     "s3fs>=2024.1",
     "obstore>=0.5",
+    "bokeh>=3.9.2",
 ]
 
 [project.urls]
@@ -40,6 +41,7 @@ Upstream = "https://github.com/EOPF-Explorer/data-model"
 
 [project.scripts]
 terrazarr = "terrazarr.cli:main"
+geozarr-pyramid = "terrazarr.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]
