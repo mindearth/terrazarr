@@ -163,11 +163,28 @@ suites below write them.
 
 ### Data
 
-| placeholder | what | used by |
+The inputs, the reference pyramids and the synthetic inputs are public, anonymous reads, under
+`s3://me-public-assets/terrazarr/` (eu-central-1), also at `https://me-public-assets.s3.eu-central-1.amazonaws.com/terrazarr/<key>`:
+
+```bash
+.venv/bin/python bench/fetch_data.py          # window inputs, window reference, synthetic: about 2 GB
+.venv/bin/python bench/fetch_data.py --full   # plus the full-Italy inputs and reference: about 9 GB more
+```
+
+| key | what | license |
 |---|---|---|
-| `[DATA-1]` | `WSF3Dv3_Italy.tif`, 178335 × 200599 float64, striped GeoTIFF (World Settlement Footprint 3D, Italy), CC BY 4.0; download location: `[DATA-1-URL]` | full-Italy and window suites, input-format runs, profile |
-| `[DATA-2]` | the 20 cm orthophoto zarr (2263040 × 2191360 × 4 uint8, band-last), CC BY 4.0; download location: `[DATA-2-URL]` | scaling study, MinIO study |
-| `[DATA-3]` | an S3-compatible endpoint with a writable bucket; the docs used a MinIO named by `AWS_ENDPOINT_URL` | every `s3://` run |
+| `inputs/WSF3Dv3_Italy_striped.tif` | the source: 178335 × 200599 float64 GeoTIFF, one-row strips, deflate, 1.88 GB (World Settlement Footprint 3D, Italy) | CC BY 4.0 |
+| `inputs/WSF3Dv3_Italy_full.zarr/` | the same as a 2048²-chunked zarr v3 store (`bench/tif_to_zarr.py`), 1.87 GB | CC BY 4.0 |
+| `inputs/WSF3Dv3_Italy_cog.tif` | the same as a COG, 512² tiles, 9 overviews, 2.94 GB | CC BY 4.0 |
+| `inputs/WSF3Dv3_Italy_win32k*` | the 32768² window (row 73728, col 77824) as zarr, COG and striped GeoTIFF | CC BY 4.0 |
+| `reference/italy_full_baseline.zarr/`, `reference/win32k_baseline.zarr/` | the pyramids of the original module, which every comparison uses | CC BY 4.0 |
+| `synthetic/s1..s4.zarr`, `synthetic/smoke_u8.zarr` | the synthetic scenarios' inputs (`bench/synth.py` regenerates them) | Apache-2.0 |
+| `results/` | the JSON and log files behind every table here | Apache-2.0 |
+
+Not public: the 20 cm orthophoto zarr of the scaling and MinIO studies (2263040 × 2191360 × 4
+uint8, band-last, 1.18 TB stored; CC BY 4.0, `[DATA-2-URL]`). The runs that write to an S3
+store used a MinIO named by `AWS_ENDPOINT_URL`; bring your own bucket for those and set the
+credentials in the environment (`bench/s3env.sh` shows the variables).
 
 Synthetic scenarios (`bench/compare.py`) need nothing external and are what CI runs.
 

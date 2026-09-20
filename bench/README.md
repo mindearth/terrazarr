@@ -5,6 +5,7 @@ lists the machine, the data placeholders and one command per table.
 
 | script | what |
 |---|---|
+| `fetch_data.py` | the public inputs, references and synthetic data (anonymous S3, see docs/benchmarks.md "Data") |
 | `synth.py`, `compare.py` | synthetic inputs and the baseline-vs-optimized scenarios s1–s4 (no external data) |
 | `run_one.py` | one run, one implementation, JSON metrics with provenance (git commit, versions, machine) |
 | `run_suite.sh`, `run_full_italy.sh` | the window and full-Italy suites on an S3 store and locally |

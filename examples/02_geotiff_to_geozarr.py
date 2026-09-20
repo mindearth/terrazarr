@@ -5,7 +5,8 @@
 
 A GeoTIFF is opened with rioxarray in shard-sized dask blocks; a COG (tiled) is read block by
 block, a striped file needs GDAL's block cache to hold a block-row of strips (GDAL_CACHEMAX).
-Sample input: [DATA-4] (a small public raster; any GeoTIFF with a CRS works).
+Sample input, 218 MB, CC BY 4.0: https://me-public-assets.s3.eu-central-1.amazonaws.com/terrazarr/inputs/WSF3Dv3_Italy_win32k_cog.tif
+(any GeoTIFF with a CRS works).
 """
 from __future__ import annotations
 

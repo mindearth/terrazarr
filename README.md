@@ -120,7 +120,7 @@ the input-format study (striped GeoTIFF, COG, zarr) and the scaling law:
 
 ## Documentation
 
-- [docs/benchmarks.md](docs/benchmarks.md): every measurement, how to reproduce it, data placeholders
+- [docs/benchmarks.md](docs/benchmarks.md): every measurement, how to reproduce it; inputs and references are public (`bench/fetch_data.py`)
 - [docs/changes.md](docs/changes.md): the 21 changes against the original, with the finding each one addresses
 - [docs/profile.md](docs/profile.md): the py-spy profile that motivated changes 12–17
 - [docs/minio.md](docs/minio.md): what an S3-compatible store delivers and what it costs a run

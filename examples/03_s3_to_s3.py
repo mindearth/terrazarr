@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A large sparse raster from an S3 zarr store to an S3 GeoZarr pyramid, resumable.
 
-    export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_ENDPOINT_URL=[DATA-3]
+    export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_ENDPOINT_URL=https://your-s3-endpoint
     python examples/03_s3_to_s3.py s3://bucket/input.zarr s3://bucket/pyramid.zarr --workers 8
 
 The settings are the ones measured for a 2 M × 2 M four-band orthophoto (docs/benchmarks.md,
