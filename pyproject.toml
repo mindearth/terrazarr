@@ -40,6 +40,7 @@ Upstream = "https://github.com/EOPF-Explorer/data-model"
 
 [project.scripts]
 terrazarr = "terrazarr.cli:main"
+geozarr-pyramid = "terrazarr.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]
