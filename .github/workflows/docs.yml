@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          uv venv .venv && uv pip install --python .venv/bin/python --group docs -e .
+          uv venv --clear .venv && uv pip install --python .venv/bin/python --group docs -e .
           .venv/bin/mkdocs build --strict
       - uses: actions/upload-pages-artifact@v3
         with:

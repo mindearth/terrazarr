@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
       - run: uv build
       - run: |
-          uv venv .venv && uv pip install --python .venv/bin/python dist/*.whl pytest && .venv/bin/python -m pytest -q tests/test_downsample.py
+          uv venv --clear .venv && uv pip install --python .venv/bin/python dist/*.whl pytest && .venv/bin/python -m pytest -q tests/test_downsample.py
       - uses: actions/upload-artifact@v4
         with:
           name: dist

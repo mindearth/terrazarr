@@ -21,7 +21,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install
         run: |
-          uv venv .venv
+          uv venv --clear .venv
           uv pip install --python .venv/bin/python -e . --group dev
       - name: Lint
         run: .venv/bin/ruff check src tests examples bench
