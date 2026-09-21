@@ -11,6 +11,7 @@ theme:
       toggle: { icon: material/brightness-4, name: light }
 nav:
   - Overview: index.md
+  - Demo: demo.md
   - Benchmarks: benchmarks.md
   - Changes against the original: changes.md
   - Profile: profile.md
