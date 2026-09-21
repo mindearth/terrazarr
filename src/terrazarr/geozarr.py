@@ -3,12 +3,12 @@
 # Derived from eopf-geozarr (Development Seed for ESA), Copyright 2025 European Space Agency (ESA),
 # Apache-2.0: https://github.com/EOPF-Explorer/data-model
 """
-GeoZarr-spec 0.4 compliant conversion tools for EOPF datasets.
+terrazarr: multiscale GeoZarr pyramids for rasters of any size.
 
-This module provides functions to convert EOPF datasets to GeoZarr-spec 0.4 compliant format
-while maintaining native projections and using /2 downsampling logic.
+`to_geozarr` writes an xarray object as a GeoZarr multiscale pyramid, GeoZarr-spec 0.4 and
+zarr-conventions (multiscales, proj, spatial) compliant, in the native CRS with /2 downsampling.
 
-Key compliance features:
+Compliance features:
 - _ARRAY_DIMENSIONS attributes on all arrays
 - CF standard names for all variables
 - grid_mapping attributes referencing CF grid_mapping variables

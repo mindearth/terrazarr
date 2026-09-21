@@ -64,9 +64,22 @@ run for a large sparse raster.
 
 ## Results at a glance
 
-On the same inputs and machine, terrazarr against the three other open-source GeoZarr pyramid
-writers: [benchmarks](benchmarks.md). The [demo](demo.md) serves the WSF-3D Italy pyramid from a
-public bucket through TiTiler.
+WSF-3D Italy, a 178 335 × 200 599 float64 raster (286 GB uncompressed) and its 32768² window,
+written as a ten-level (eight-level) pyramid with 256² chunks in 4096² shards, same machine
+(24 cores, 43 GB), same settings wherever a writer takes them:
+
+| writer | 32768² window | full Italy |
+|---|---|---|
+| terrazarr, 8 processes | 26 s, 0.5 GB | 314 s, 0.7 GB |
+| eopf-geozarr 0.11.0 | 460 s, 18.7 GB | stopped after 42 min at a 30 GB cap, nothing written |
+| topozarr 0.1.9 | 33 s, 2.9 GB | 1006 s, 1.3 GB |
+| GDAL 3.13.3 | 34 s, 2.2 GB | 655 s, 8.8 GB |
+
+Wall time and peak memory of the whole process tree. terrazarr keeps a numeric nodata out of
+the overviews, GDAL does so when the source fill value is numeric, eopf-geozarr and topozarr
+average it in. The full comparison, on synthetic rasters as
+well, with the writers' characteristics and the correctness checks: [benchmarks](benchmarks.md). The
+[demo](demo.md) serves the WSF-3D Italy pyramid from a public bucket through TiTiler.
 
 ## Authors and contributors
 
