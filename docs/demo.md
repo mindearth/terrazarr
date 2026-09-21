@@ -1,6 +1,6 @@
-# Demo: WSF3D Italy
+# Demo: WSF-3D Italy
 
-The World Settlement Footprint 3D layer over Italy, 178 335 × 200 599 float64 pixels of building
+The World Settlement Footprint 3D (WSF-3D) layer over Italy, 178 335 × 200 599 float64 pixels of building
 height, as the GeoZarr pyramid this pipeline writes (chunk 256, shard 4096, mean, nodata 0, ten
 levels), served straight from the public bucket by a TiTiler with a GeoZarr reader. Every tile
 you see is cut on request from the pyramid level that matches the zoom: no tile cache, no
@@ -35,7 +35,7 @@ pre-rendering.
   }).addTo(map);
   new PyramidLayer("", {
     minZoom: 5, maxZoom: 18, maxNativeZoom: 14, opacity: 0.95,
-    attribution: "WSF3D &copy; DLR, CC BY 4.0 &middot; tiles by TiTiler from the GeoZarr pyramid"
+    attribution: "WSF-3D &copy; DLR, CC BY 4.0 &middot; tiles by TiTiler from the GeoZarr pyramid"
   }).addTo(map);
   L.tileLayer(esri + "World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", { maxNativeZoom: 16, maxZoom: 18, pane: "overlayPane" }).addTo(map);
 
