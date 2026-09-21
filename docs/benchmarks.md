@@ -97,7 +97,53 @@ How they differ, from their sources at these versions:
 
 ## Correctness across writers
 
-<!-- CORRECTNESS -->
+## Correctness across writers
+
+Checked on the writers' own outputs at the versions above (`bench/tools/check_levels.py` on the
+WSF-3D window and on a 1002² synthetic raster, `bench/tools/compare_any.py` for the values).
+
+**Nodata in overviews.** WSF-3D is 98.7 % zeros, and zero means "no building". terrazarr excludes
+a numeric nodata from the mean and blanks a block below 30 % valid, so the fraction of zero
+pixels stays at 97–99 % through the levels. eopf-geozarr 0.11.0 carries fill values as metadata,
+a source `_FillValue` is kept on level 0 and every overview gets NaN as fill, but neither its
+multiscales data model nor its converter has a nodata rule: the reducer accepts a nodata value
+and is called without one, a numeric nodata cannot be passed through the API, and zeros are
+averaged in. topozarr averages zeros in likewise, NaN aside. GDAL honours a numeric zarr fill
+value as nodata, so on the synthetic rasters, whose fill is 0, its overviews match terrazarr's
+within rounding; on WSF-3D, whose fill is NaN, it averages zeros in. The effect on the window:
+the zero fraction of the top level is 97 % for terrazarr and 58 % for the other three, and the
+level-1 values differ on 1.5 % of the pixels by up to 128 m. All three others agree with each
+other on that.
+
+**CRS on every level.** terrazarr and eopf-geozarr 0.11.0 write a CF `spatial_ref` grid mapping
+in every level group, so rioxarray reads the CRS and transform at any level. topozarr writes the
+CRS once, as `proj:*` attributes of the root under the proj convention, and no per-level grid
+mapping, so a level opened on its own has no CRS for rioxarray. GDAL's Zarr output carries the
+multiscales attribute and its own georeferencing arrays; rioxarray does not recover a transform
+from it, GDAL itself does.
+
+**Pixel size of the overviews.** terrazarr's level L pixel is exactly `2**L` native pixels at
+every level, anchored on the native top-left corner. eopf-geozarr 0.11.0 stretches the native
+extent over the trimmed level shape: on a 1002² raster its level 2 pixel is 4.008 native pixels
+and its level 4 pixel 16.16; the drift only vanishes where the shape divides evenly, as on the
+32768² window. topozarr is exact. GDAL rounds the level size up rather than down (89 168 rows
+where the others have 89 167 on full Italy) and stretches the extent over it.
+
+**Dtype and rounding.** eopf-geozarr writes float64 overviews whatever the source; the others
+keep the source dtype, terrazarr and GDAL rounding integer means to nearest and topozarr
+truncating.
+
+**Execution model of eopf-geozarr 0.11.0.** The data-model rewrite changed the metadata layer,
+not the writer: level 0 goes through dask, then every overview is computed from the whole
+previous level as one numpy array (`ds[var].values`). On the WSF-3D window that is the full
+8.6 GB level 0 in memory plus the reduction's temporaries; on full Italy level 0 is 286 GB and
+the run cannot start, which the attempt below confirms.
+
+**Interoperability notes.** GDAL 3.13.3 writes `fill_value: null` for the arrays of a
+(band, y, x) raster, which zarr-python 3.1.6 refuses to open; the s3 comparison patched those
+fill values to 0 first. eopf-geozarr writes nothing for a root-only DataTree; the data has to
+sit under a child group, and that group is level 0 with the overviews as `r2`, `r4`, ... below it.
+
 
 ## Scaling
 
