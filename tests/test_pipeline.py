@@ -15,9 +15,12 @@ from terrazarr.store import get_zarr_store, set_spatial_info
 def _run(inp, out, **kw):
     ds = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": kw["shard_size"], "x": kw["shard_size"]}, consolidated=False)
     ds = set_spatial_info(ds)
-    params = dict(groups=["/"], output_path=out, min_dimension=kw.get("chunk_size", 64), chunk_size=64, max_retries=1)
+    params = dict(min_dimension=kw.get("chunk_size", 64), chunk_size=64, max_retries=1)
     params.update(kw)
-    return geozarr.create_geozarr_dataset(xr.DataTree(ds), **params)
+    params["sharding"] = params.pop("enable_sharding", True)
+    if "nodata_value" in params:
+        params["nodata"] = params.pop("nodata_value")
+    return geozarr.to_geozarr(ds, out, **params)
 
 
 def _open_level(out, level):
@@ -26,7 +29,7 @@ def _open_level(out, level):
 
 def test_precondition_shard_size_multiple_of_chunk_size(tmp_path):
     with pytest.raises(ValueError, match="multiple of chunk_size"):
-        geozarr.create_geozarr_dataset(xr.DataTree(), ["/"], str(tmp_path / "o.zarr"), shard_size=300, chunk_size=256)
+        geozarr.to_geozarr(xr.Dataset(), str(tmp_path / "o.zarr"), shard_size=300, chunk_size=256)
 
 
 def test_encoding_shards_bounded_and_clipped():

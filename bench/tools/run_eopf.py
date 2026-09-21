@@ -1,10 +1,12 @@
-"""Run the upstream EOPF converter (eopf-geozarr, `.venv-eopf`) on a zarr input; print JSON metrics.
+"""Run the upstream EOPF converter (eopf-geozarr 0.11.0 from its git tag, `.venv-eopf`, Python 3.12) on a zarr input; print JSON metrics.
 
-    .venv-eopf/bin/python bench/tools/run_eopf.py --input in.zarr --output out.zarr --shard-size 4096 --chunk-size 256 --threads 8
+    .venv-eopf/bin/python bench/tools/run_eopf.py --input in.zarr --output out.zarr --shard-size 4096 --threads 8
 
 The converter needs the data under a child group (a root-only tree writes nothing), so the
-input dataset is placed at /measurements and the pyramid lands under out.zarr/measurements/{0,1,..}.
-Overviews are computed from the whole previous level as one numpy array (`ds[var].values`).
+input dataset is placed at /measurements; level 0 is the group itself and the overviews are
+its children r2, r4, ... (0.11.0 layout). The zarr chunk is the converter's own choice
+(no tile-width parameter since 0.8); overviews are computed from the whole previous level
+as one numpy array (`ds[var].values`).
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ def main() -> None:
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--shard-size", type=int, default=4096, help="eopf spatial_chunk")
-    p.add_argument("--chunk-size", type=int, default=256, help="eopf tile_width")
+    p.add_argument("--chunk-size", type=int, default=256, help="unused by 0.11.0 (kept for a uniform command line)")
     p.add_argument("--min-dimension", type=int, default=256)
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--quiet", action="store_true")
@@ -53,7 +55,7 @@ def main() -> None:
     err = None
     try:
         create_geozarr_dataset(dt, ["/measurements"], a.output, spatial_chunk=a.shard_size, min_dimension=a.min_dimension,
-                               tile_width=a.chunk_size, max_retries=1, enable_sharding=True)
+                               max_retries=1, enable_sharding=True)
     except Exception as e:  # noqa: BLE001
         err = f"{type(e).__name__}: {e}"
     wall = time.perf_counter() - t0

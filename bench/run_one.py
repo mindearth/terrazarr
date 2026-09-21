@@ -180,11 +180,11 @@ def main() -> None:
         if args.method != "mean" or args.nodata is not None:
             print(f"baseline: eopf-geozarr ignores --method {args.method} and --nodata {args.nodata}", file=sys.stderr)
 
-        def create_geozarr_dataset(dt, groups, output_path, shard_size, min_dimension, chunk_size, max_retries,
-                                   enable_sharding, method, nodata_value, **_):
-            dt = xr.DataTree.from_dict({"/measurements": dt.to_dataset()})
-            return eopf_create(dt, ["/measurements"], output_path, spatial_chunk=shard_size, min_dimension=min_dimension,
-                               tile_width=chunk_size, max_retries=max_retries, enable_sharding=enable_sharding)
+        def to_geozarr(ds, output, *, shard_size, min_dimension, chunk_size, max_retries, sharding, method, nodata, **_):
+            # eopf-geozarr 0.11.0: no tile width (the zarr chunk is its own choice), no method, no nodata
+            dt = xr.DataTree.from_dict({"/measurements": ds})
+            return eopf_create(dt, ["/measurements"], output, spatial_chunk=shard_size, min_dimension=min_dimension,
+                               max_retries=max_retries, enable_sharding=sharding)
 
         def get_zarr_store(path, _profile=None):
             return zarr.storage.LocalStore(path) if not path.startswith("s3://") else path
@@ -193,7 +193,7 @@ def main() -> None:
             ds = ds.rio.set_spatial_dims(x_dim="x", y_dim="y")
             return ds if ds.rio.crs else ds.rio.write_crs("EPSG:4326")
     else:
-        from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+        from terrazarr.geozarr import make_compressor, to_geozarr
         from terrazarr.store import get_zarr_store, set_spatial_info
 
     counters: Counter = Counter()
@@ -217,7 +217,6 @@ def main() -> None:
             chunks={"y": args.shard_size, "x": args.shard_size}, consolidated=False,
         )
     ds = set_spatial_info(ds)
-    dt = xr.DataTree(ds)
 
     t0 = time.perf_counter()
     err = None
@@ -227,10 +226,10 @@ def main() -> None:
     if args.impl == "optimized":
         extra["compressor"] = make_compressor(args.compressor, args.clevel)
     try:
-        create_geozarr_dataset(
-            dt, groups=["/"], output_path=args.output,
+        to_geozarr(
+            ds, args.output,
             shard_size=args.shard_size, min_dimension=args.chunk_size, chunk_size=args.chunk_size,
-            max_retries=1, enable_sharding=args.sharding, method=args.method, nodata_value=args.nodata,
+            max_retries=1, sharding=args.sharding, method=args.method, nodata=args.nodata,
             **extra,
         )
     except Exception as e:  # report, don't hide

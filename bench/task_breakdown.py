@@ -18,7 +18,7 @@ import xarray as xr
 from dask.distributed import Client, get_task_stream
 from scaling import make_input  # noqa: E402
 
-from terrazarr.geozarr import create_geozarr_dataset
+from terrazarr.geozarr import to_geozarr
 from terrazarr.store import get_zarr_store, set_spatial_info
 
 if __name__ == "__main__":
@@ -30,7 +30,7 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     with get_task_stream(client=client) as ts:
         so = sys.stdout; sys.stdout = open(os.devnull, "w")
-        create_geozarr_dataset(xr.DataTree(ds), groups=["/"], output_path=out, shard_size=chunk, min_dimension=256, chunk_size=256, max_retries=1, enable_sharding=True, method="mean", nodata_value=0)
+        to_geozarr(ds, out, shard_size=chunk, min_dimension=256, chunk_size=256, max_retries=1, sharding=True, method="mean", nodata=0)
         sys.stdout = so
     wall = time.perf_counter() - t0
     per = collections.defaultdict(lambda: [0, 0.0, 0.0, 0.0])   # count, compute, transfer, deserialize

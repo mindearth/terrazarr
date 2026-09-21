@@ -13,10 +13,9 @@ from __future__ import annotations
 import argparse
 
 import rioxarray
-import xarray as xr
 from dask.distributed import Client
 
-from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr import make_compressor, to_geozarr
 from terrazarr.store import set_spatial_info
 
 
@@ -36,10 +35,10 @@ def main() -> None:
         ds = da.to_dataset(name="data")
         ds["data"].attrs.pop("_FillValue", None); ds["data"].encoding.pop("_FillValue", None)
         ds = set_spatial_info(ds)
-        create_geozarr_dataset(
-            xr.DataTree(ds), groups=["/"], output_path=a.output,
-            chunk_size=a.chunk_size, shard_size=a.shard_size, enable_sharding=True,
-            min_dimension=a.chunk_size, method=a.method, nodata_value=a.nodata,
+        to_geozarr(
+            ds, a.output,
+            chunk_size=a.chunk_size, shard_size=a.shard_size, sharding=True,
+            min_dimension=a.chunk_size, method=a.method, nodata=a.nodata,
             compressor=make_compressor("zstd", 3),
         )
     finally:

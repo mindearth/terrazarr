@@ -456,67 +456,91 @@ def _overview_arrays_from_store(
 # ---------------------------------------------------------------------------
 
 
-def create_geozarr_dataset(
-    dt_input: xr.DataTree,
-    groups: Iterable[str],
-    output_path: str,
-    shard_size: int = 4096,
-    min_dimension: int = 256,
+def to_geozarr(
+    data: xr.DataArray | xr.Dataset | xr.DataTree,
+    output: str,
+    *,
+    groups: Iterable[str] | None = None,
     chunk_size: int = 256,
+    shard_size: int = 4096,
+    sharding: bool = True,
+    method: str = "mean",
+    nodata: float | None = None,
+    min_dimension: int | None = None,
+    compressor: Any = DEFAULT_COMPRESSOR,
+    window_shards: int | None = None,
     max_retries: int = 3,
     crs_groups: Iterable[str] | None = None,
     gcp_group: str | None = None,
-    enable_sharding: bool = False,
-    method: str = "mean",
-    nodata_value: float | None = None,
-    s3_profile: str | None = None,
     store: StoreLike | None = None,
-    compressor: Any = DEFAULT_COMPRESSOR,
-    window_shards: int | None = None,
+    s3_profile: str | None = None,
 ) -> xr.DataTree:
     """
-    Create a GeoZarr-spec 0.4 compliant dataset from EOPF data.
+    Write an xarray object as a GeoZarr multiscale pyramid.
+
+    The counterpart of ``rioxarray``'s ``to_raster`` for GeoZarr: ``data`` becomes level 0 of
+    a zarr v3 store and every further level is its ``2**L`` reduction, with CRS, transform
+    and multiscales metadata on each level. ``data`` must have ``y``/``x`` dimensions and a
+    CRS readable by rioxarray (``ds.rio.crs``); a dask-backed object is written lazily, in
+    windows, with bounded memory whatever its size. Also available as the accessor
+    ``ds.terrazarr.to_geozarr(output, ...)``.
 
     Parameters
     ----------
-    dt_input : xr.DataTree
-        Input EOPF DataTree
-    groups : list[str]
-        List of group names to process as Geozarr datasets.
-    output_path : str
-        Output path for the Zarr store (local path or s3:// URL)
-    shard_size : int, default 4096
-        Shard size on y/x when sharding is enabled, and the dask block size on y/x
-        in every case. Must be a multiple of ``chunk_size``.
-    min_dimension : int, default 256
-        Minimum dimension for overview levels
+    data : xarray.DataArray, xarray.Dataset or xarray.DataTree
+        A DataArray is written as the variable ``data`` (or its name); a Dataset as the root
+        group; a DataTree group by group (see ``groups``).
+    output : str
+        Output store: a local path or an ``s3://`` URL (credentials from the environment).
+    groups : iterable of str, optional
+        For a DataTree, the groups to write as pyramids; default the root when it holds data
+        variables, otherwise every group that does.
     chunk_size : int, default 256
-        Zarr chunk size on y/x (the tile served to clients)
-    max_retries : int, default 3
-        Maximum number of retries for network operations
-    crs_groups : Iterable[str], optional
-        Iterable of group names that need CRS information added on best-effort basis
-    gcp_group : str, optional
-        Group name where GCPs (Ground Control Points) are located.
-    enable_sharding : bool, default False
-        Enable zarr sharding for spatial dimensions of each variable
-    method : str, default "mean"
-        Resampling method: mean, min, max, median or nearest
-    nodata_value : float, optional
-        Nodata value; NaN is always treated as nodata
-    s3_profile : str, optional
-        Kept for CLI compatibility; credentials come from the environment
-    store : zarr store, optional
-        Store to write to. Built from ``output_path`` when omitted.
+        Zarr chunk on y/x, the tile a client fetches.
+    shard_size : int, default 4096
+        Zarr shard on y/x with ``sharding``, i.e. how many chunks travel in one object, and the
+        dask block on y/x in every case; a multiple of ``chunk_size``.
+    sharding : bool, default True
+        Write sharded arrays (one object per shard) instead of one object per chunk.
+    method : {"mean", "min", "max", "median", "nearest"}, default "mean"
+        Reduction from one level to the next.
+    nodata : float, optional
+        Numeric nodata value, excluded from the reduction; NaN is always nodata. A block with
+        less than 30 % valid pixels becomes nodata.
+    min_dimension : int, optional
+        Stop adding levels when both dimensions are below this; default ``chunk_size``.
     compressor : zarr codec, optional
-        Codec for the data variables of every level; see :func:`make_compressor`.
-        Default Blosc zstd level 3 with byte shuffle; ``None`` writes uncompressed.
+        Codec for every level's data variables, see :func:`make_compressor`; default Blosc
+        zstd level 3 with byte shuffle, ``None`` for no compression.
+    window_shards : int, optional
+        Level 0 is written in windows of this many blocks per axis, one dask compute each
+        (default 32). Bounds the memory of the process that holds the dask graph.
+    max_retries : int, default 3
+        Attempts per window, and per band in the fallback path.
+    crs_groups, gcp_group : optional
+        Groups that need CRS information on a best-effort basis, and the group holding
+        ground control points (Sentinel-1 inputs).
+    store : zarr store, optional
+        Store to write to, built from ``output`` when omitted.
+    s3_profile : str, optional
+        Kept for compatibility; credentials come from the environment.
 
     Returns
     -------
-    xr.DataTree
-        DataTree containing the GeoZarr compliant data
+    xarray.DataTree
+        The written pyramid, one child per level.
     """
+    if isinstance(data, xr.DataArray):
+        data = data.to_dataset(name=data.name or "data")
+    if isinstance(data, xr.Dataset):
+        data = xr.DataTree(data)
+        groups = ["/"]
+    if groups is None:
+        groups = ["/"] if data.data_vars else [p for p, node in data.subtree_with_keys if node.data_vars]
+        groups = ["/" + g.lstrip("./") if g not in (".", "/") else "/" for g in groups]
+    dt_input, output_path, enable_sharding, nodata_value = data, output, sharding, nodata
+    if min_dimension is None:
+        min_dimension = chunk_size
     if chunk_size <= 0 or shard_size <= 0:
         raise ValueError("chunk_size and shard_size must be positive")
     if shard_size % chunk_size:
@@ -664,7 +688,7 @@ def iterative_copy(
         Compressor to use for encoding
     shard_size, min_dimension, chunk_size, max_retries, crs_groups, gcp_group,
     enable_sharding, method, nodata_value
-        See :func:`create_geozarr_dataset`
+        See :func:`to_geozarr`
 
     Returns
     -------

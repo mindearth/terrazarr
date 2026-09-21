@@ -17,7 +17,7 @@ import argparse
 import xarray as xr
 from dask.distributed import Client
 
-from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr import make_compressor, to_geozarr
 from terrazarr.store import get_zarr_store, set_spatial_info
 
 
@@ -35,10 +35,10 @@ def main() -> None:
     try:
         ds = xr.open_dataset(get_zarr_store(a.input), engine="zarr", chunks={"y": a.shard_size, "x": a.shard_size}, consolidated=False)
         ds = set_spatial_info(ds)
-        create_geozarr_dataset(
-            xr.DataTree(ds), groups=["/"], output_path=a.output,
-            chunk_size=a.chunk_size, shard_size=a.shard_size, enable_sharding=True,
-            min_dimension=a.chunk_size, method=a.method, nodata_value=a.nodata,
+        to_geozarr(
+            ds, a.output,
+            chunk_size=a.chunk_size, shard_size=a.shard_size, sharding=True,
+            min_dimension=a.chunk_size, method=a.method, nodata=a.nodata,
             compressor=make_compressor("zstd", 3), window_shards=a.window_shards,
         )
     finally:

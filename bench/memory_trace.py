@@ -15,7 +15,7 @@ import time
 import xarray as xr
 
 from terrazarr.cli import get_dask_client
-from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.geozarr import make_compressor, to_geozarr
 from terrazarr.store import get_zarr_store, set_spatial_info
 
 OUT = sys.argv[1]; LOG = sys.argv[2]; SRC = sys.argv[3] if len(sys.argv) > 3 else "s3://test/agea4.zarr"
@@ -44,10 +44,10 @@ if __name__ == '__main__':
     ds = set_spatial_info(ds)
     mark(f"dataset open: {dict(ds.sizes)} var chunks {ds['z18'].chunks and [len(c) for c in ds['z18'].chunks]}")
     dt = xr.DataTree(ds)
-    mark("create_geozarr_dataset")
+    mark("to_geozarr")
     try:
-        create_geozarr_dataset(dt, groups=["/"], output_path=OUT, shard_size=4096, min_dimension=256, chunk_size=256, max_retries=1,
-                               enable_sharding=True, method="mean", nodata_value=0, compressor=make_compressor("zstd", 3))
+        to_geozarr(dt.to_dataset() if isinstance(dt, xr.DataTree) else dt, OUT, shard_size=4096, min_dimension=256, chunk_size=256, max_retries=1,
+                               sharding=True, method="mean", nodata=0, compressor=make_compressor("zstd", 3))
         mark("done")
     except Exception as e:
         mark(f"failed: {type(e).__name__}: {str(e)[:300]}")

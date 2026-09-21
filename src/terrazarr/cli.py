@@ -10,7 +10,7 @@ import os
 
 import xarray as xr
 
-from terrazarr.geozarr import create_geozarr_dataset, make_compressor
+from terrazarr.geozarr import make_compressor, to_geozarr
 from terrazarr.store import get_zarr_store, set_spatial_info
 
 log = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         "a multiple of --chunk-size",
     )
     parser.add_argument(
-        "--method", default="min", choices=["mean", "min", "max", "median", "nearest"],
+        "--method", default="mean", choices=["mean", "min", "max", "median", "nearest"],
         help="Resampling method for pyramid levels",
     )
     parser.add_argument("--sharding", action="store_true", default=False, help="Enable zarr sharding")
@@ -115,23 +115,20 @@ def main(argv: list[str] | None = None) -> None:
         chunks={"y": args.shard_size, "x": args.shard_size},
     )
     ds = set_spatial_info(ds)
-    dt = xr.DataTree(ds)
 
     try:
-        create_geozarr_dataset(
-            dt,
-            groups=["/"],
-            output_path=args.output,
-            shard_size=args.shard_size,
-            min_dimension=args.chunk_size,
+        to_geozarr(
+            ds,
+            args.output,
             chunk_size=args.chunk_size,
-            max_retries=3,
-            enable_sharding=args.sharding,
+            shard_size=args.shard_size,
+            sharding=args.sharding,
             method=args.method,
-            nodata_value=args.nodata,
-            s3_profile=args.s3_profile,
+            nodata=args.nodata,
+            min_dimension=args.chunk_size,
             compressor=make_compressor(args.compressor, args.clevel),
             window_shards=args.window_shards,
+            s3_profile=args.s3_profile,
         )
     finally:
         client.close()
