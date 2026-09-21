@@ -179,6 +179,7 @@ The inputs, the reference pyramids and the synthetic inputs are public, anonymou
 | `inputs/WSF3Dv3_Italy_win32k*` | the 32768² window (row 73728, col 77824) as zarr, COG and striped GeoTIFF | CC BY 4.0 |
 | `reference/italy_full_baseline.zarr/`, `reference/win32k_baseline.zarr/` | the pyramids of the original module, which every comparison uses | CC BY 4.0 |
 | `synthetic/s1..s4.zarr`, `synthetic/smoke_u8.zarr` | the synthetic scenarios' inputs (`bench/synth.py` regenerates them) | Apache-2.0 |
+| `demo/WSF3Dv3_Italy.zarr/` | the pyramid this module writes from the full-Italy input (chunk 256, shard 4096, mean, nodata 0), behind the [demo](demo.md) | CC BY 4.0 |
 | `results/` | the JSON and log files behind every table here | Apache-2.0 |
 
 Not public: the 20 cm orthophoto zarr of the scaling and MinIO studies (2263040 × 2191360 × 4
