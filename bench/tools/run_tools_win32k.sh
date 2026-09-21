@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The 32768² Italy window (local zarr input) through four GeoZarr pyramid writers with matched
 # settings (mean, 8 levels down to 256 px, 8 threads or workers): this module (threaded and with 8
-# processes), the upstream EOPF converter, topozarr and GDAL 3.13.2 (gdal_translate + gdaladdo).
+# processes), the upstream EOPF converter, topozarr and GDAL 3.13.3 (gdal_translate + gdaladdo).
 # Each output is then compared with the baseline window, levels matched by shape.
 #   bash bench/tools/run_tools_win32k.sh          # bench/out/tools_win32k_*.json, log on stdout
 set -uo pipefail

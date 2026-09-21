@@ -1,5 +1,6 @@
 site_name: terrazarr
 site_description: GeoZarr multiscale pyramids for planetary-scale rasters
+site_url: https://mindearth.github.io/terrazarr/
 repo_url: https://github.com/mindearth/terrazarr
 theme:
   name: material
@@ -11,12 +12,21 @@ theme:
       toggle: { icon: material/brightness-4, name: light }
 nav:
   - Overview: index.md
-  - Demo: demo.md
+  - API: api.md
   - Benchmarks: benchmarks.md
-  - Changes against the original: changes.md
-  - Profile: profile.md
-  - S3 and MinIO: minio.md
-  - Tests: testing.md
+  - Demo: demo.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            show_source: false
+            show_root_heading: true
+            members_order: source
 markdown_extensions:
   - tables
   - toc: { permalink: true }
+  - admonition

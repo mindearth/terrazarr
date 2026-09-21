@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# GDAL 3.13 Zarr V3 pyramid: gdal_translate to a Zarr V3 array (256² chunks, zstd), then gdaladdo
+# GDAL 3.13.3 Zarr V3 pyramid: gdal_translate to a Zarr V3 array (256² chunks, zstd), then gdaladdo
 # -r average writes the overviews as ovr_2x.. groups with a multiscales attribute (zarr-conventions v1).
 # Runs in the official docker image (the system GDAL is 3.8). Reports wall, CPU, peak memory of the
 # container (cgroup memory.peak) and object count as JSON.
 #   bash bench/tools/run_gdal.sh IN.zarr OUT.zarr [levels=8] [blocksize=256]
 set -uo pipefail
 IN=$(realpath "$1"); OUT=$2; LEVELS=${3:-8}; BS=${4:-256}
-IMG=ghcr.io/osgeo/gdal:ubuntu-full-3.13.2
+IMG=ghcr.io/osgeo/gdal:ubuntu-full-3.13.3
 rm -rf "$OUT"; mkdir -p "$(dirname "$OUT")"; OUTDIR=$(realpath "$(dirname "$OUT")"); NAME=$(basename "$OUT")
 factors=""; f=2; for ((i=1; i<LEVELS; i++)); do factors="$factors $f"; f=$((f*2)); done
 CID=gdalzarr_$$

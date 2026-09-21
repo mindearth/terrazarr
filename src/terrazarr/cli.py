@@ -27,7 +27,7 @@ def get_dask_client(
     Connects through dask-gateway when DASK_GATEWAY_URL and DASK_GATEWAY_PASSWORD
     are set, otherwise starts a local cluster. Threads per worker and the memory
     limit are the two levers that trade concurrency against peak memory; the
-    reduction holds roughly one shard per thread (see docs/changes.md, H1).
+    reduction holds roughly one shard per thread.
     """
     gateway_url = os.environ.get("DASK_GATEWAY_URL")
     gateway_password = os.environ.get("DASK_GATEWAY_PASSWORD")

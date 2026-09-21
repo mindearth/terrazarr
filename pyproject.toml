@@ -34,7 +34,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/mindearth/terrazarr"
 Documentation = "https://mindearth.github.io/terrazarr"
-Changelog = "https://github.com/mindearth/terrazarr/blob/main/docs/changes.md"
+Changelog = "https://github.com/mindearth/terrazarr/blob/main/CHANGELOG.md"
 Issues = "https://github.com/mindearth/terrazarr/issues"
 Upstream = "https://github.com/EOPF-Explorer/data-model"
 
@@ -44,7 +44,7 @@ geozarr-pyramid = "terrazarr.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]
-docs = ["mkdocs-material>=9.5"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
 
 [build-system]
 requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]

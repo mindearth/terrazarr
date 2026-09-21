@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full WSF3Dv3 Italy (local zarr input, 178335×200599 float64) through this module (8 processes),
-# topozarr (8 workers) and GDAL 3.13.2, then each output compared with the baseline pyramid,
+# topozarr (8 workers) and GDAL 3.13.3, then each output compared with the baseline pyramid,
 # levels matched by shape. The EOPF converter is not run: it computes every overview from the
 # whole previous level as one numpy array (level 0 is 286 GB).
 #   bash bench/tools/run_tools_full.sh          # bench/out/tools_full_*.json, log on stdout
