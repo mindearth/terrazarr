@@ -98,9 +98,7 @@ Wall time is the whole run from the `time` wrapper (process start to exit, inclu
 own start-up); CPU is the wrapper's average utilisation, `container` where the writer ran in
 Docker and only its cgroup memory was polled; peak RSS is the maximum resident set of the
 process tree, with the dask workers of terrazarr and eopf-geozarr included. Object counts are
-covered in the notes below the tables, and how each writer's overview values compare with the
-reference described under [Data](#data) is covered separately, under
-[Correctness across writers](#correctness-across-writers).
+covered in the notes below the tables.
 
 ### Synthetic scenarios, mean, 4 workers or threads
 

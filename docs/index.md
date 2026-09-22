@@ -2,7 +2,7 @@
 
 GeoZarr multiscale pyramids for planetary-scale rasters: a lazy, windowed and resumable writer
 of zarr v3 stores with sharding, for any xarray object with a CRS.
-Documentation: [mindearth.github.io/terrazarr](https://mindearth.github.io/terrazarr/).
+Source, issues and releases: [github.com/mindearth/terrazarr](https://github.com/mindearth/terrazarr).
 
 ## Why terrazarr
 
@@ -72,8 +72,8 @@ terrazarr --input in.zarr --output out.zarr \
   --compressor zstd --clevel 3
 ```
 
-Local paths and `s3://` URLs work for both input and output. The [API](https://mindearth.github.io/terrazarr/api/) page lists every
-option, the output layout and the conventions the store follows; [examples/](examples/)
+Local paths and `s3://` URLs work for both input and output. The [API](api.md) page lists every
+option, the output layout and the conventions the store follows; [examples/](https://github.com/mindearth/terrazarr/tree/main/examples)
 has a synthetic raster that runs in under a minute, a GeoTIFF to GeoZarr script and an S3 to S3
 run for a large sparse raster.
 
@@ -103,9 +103,9 @@ written as a ten-level (eight-level) pyramid with 256² chunks in 4096² shards,
 
 Wall time and peak memory of the whole process tree. terrazarr keeps a numeric nodata out of
 the overviews, GDAL does so when the source fill value is numeric, eopf-geozarr and topozarr
-average it in. The full comparison, on synthetic rasters as
-well, with the writers' characteristics and the correctness checks: [benchmarks](https://mindearth.github.io/terrazarr/benchmarks/). The
-[demo](https://mindearth.github.io/terrazarr/demo/) serves the WSF-3D Italy pyramid from a public bucket through TiTiler.
+average it in. The full comparison, on synthetic rasters as well, with the writers'
+characteristics and the correctness checks: [benchmarks](benchmarks.md). The [demo](demo.md)
+serves the WSF-3D Italy pyramid from a public bucket through TiTiler.
 
 ## Authors and contributors
 
@@ -117,5 +117,8 @@ well, with the writers' characteristics and the correctness checks: [benchmarks]
 Derived from `eopf_geozarr.conversion.geozarr` of
 [EOPF-Explorer/data-model](https://github.com/EOPF-Explorer/data-model), Copyright 2025 European
 Space Agency (ESA), written by Development Seed, Apache License 2.0. terrazarr is licensed under
-the Apache License 2.0; the changes against the original are listed in [CHANGELOG.md](CHANGELOG.md) and
-credited in [NOTICE](NOTICE); see [LICENSE](LICENSE) and cite with [CITATION.cff](CITATION.cff).
+the Apache License 2.0; the changes against the original are listed in
+[CHANGELOG.md](https://github.com/mindearth/terrazarr/blob/main/CHANGELOG.md) and credited in
+[NOTICE](https://github.com/mindearth/terrazarr/blob/main/NOTICE); see
+[LICENSE](https://github.com/mindearth/terrazarr/blob/main/LICENSE) and cite with
+[CITATION.cff](https://github.com/mindearth/terrazarr/blob/main/CITATION.cff).
