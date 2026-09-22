@@ -1,7 +1,5 @@
 # API
 
-## `to_geozarr`
-
 ::: terrazarr.to_geozarr
 
 ## Accessors
@@ -16,10 +14,6 @@ import xarray as xr
 ds = xr.open_dataset("in.zarr", engine="zarr", chunks={"y": 4096, "x": 4096})
 ds.terrazarr.to_geozarr("out.zarr", chunk_size=256, shard_size=4096, method="mean", nodata=0)
 ```
-
-## `make_compressor`
-
-::: terrazarr.make_compressor
 
 ## Command line
 

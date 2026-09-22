@@ -102,11 +102,12 @@ covered in the notes below the tables.
 
 ### Synthetic scenarios, mean, 4 workers or threads
 
-![Wall time by writer, synthetic scenarios s1-s4](assets/bench-synthetic-wall.svg)
-![Peak memory by writer, synthetic scenarios s1-s4](assets/bench-synthetic-memory.svg)
+![Wall time by writer relative to terrazarr, synthetic scenarios s1-s4](assets/bench-synthetic-wall.svg)
+![Peak memory by writer relative to terrazarr, synthetic scenarios s1-s4](assets/bench-synthetic-memory.svg)
 
-CPU utilisation and object counts aren't in the charts; the table below each scenario has the
-full precision.
+Each bar is a multiple of terrazarr's own number on that scenario (terrazarr, 4 processes = 1×,
+the dashed line); the absolute seconds and gigabytes, CPU utilisation and object counts aren't in
+the charts — the table below each scenario has the full precision.
 
 #### s1: uint8 16384², sharded
 
@@ -152,8 +153,11 @@ full precision.
 
 ### WSF-3D Italy, window and full
 
-![Wall time by writer, WSF-3D Italy window and full](assets/bench-wsf-wall.svg)
-![Peak memory by writer, WSF-3D Italy window and full](assets/bench-wsf-memory.svg)
+![Wall time by writer relative to terrazarr, WSF-3D Italy window and full](assets/bench-wsf-wall.svg)
+![Peak memory by writer relative to terrazarr, WSF-3D Italy window and full](assets/bench-wsf-memory.svg)
+
+Each bar is a multiple of terrazarr's own number on that run (terrazarr, 8 processes = 1×, the
+dashed line); the table below has the absolute seconds and gigabytes.
 
 #### 32768² window
 
@@ -176,17 +180,25 @@ full precision.
 
 
 
-- **topozarr** is the fastest writer on data that fits in RAM: its fused
-level-0 copy and Rust reduce kernel finish the synthetic scenarios in 4.5 to 6 s and the 8.6 GB WSF-3D window in 32.7 s. 
-- **terrazarr** trails it closely at a fraction of the memory (13 to 22 s and 26 s, at half topozarr's peak RSS or less) and that gap flips as the input stops fitting in RAM. terrazarr's peak memory is set by its window size, not by the dataset, so it stays at 0.3 to 0.9 GB from the smallest synthetic raster up to the full 286 GB, 36-billion-pixel WSF-3D Italy: 314 s at 0.71 GB, barely more than on the window. topozarr, whose speed depends on levels
-fitting in RAM, takes 1006 s on the same raster, 3× terrazarr's time, once it has to fall back to
-reading levels back from the store; GDAL finishes in 655 s at 8.8 GB, 12× terrazarr's memory.
-- **eopf-geozarr**, which needs the whole previous level as one numpy array per overview, cannot finish it at all: given a 30 GB cap, it pinned at that cap after 42 minutes, one core busy,
-without writing a single data chunk, since level 0 alone is 286 GB, more than six times this
-machine's RAM. 
+- **topozarr** is the fastest writer only on the small, 4-worker synthetic scenarios: its fused
+level-0 copy and Rust reduce kernel finish s1 to s4 in 4.5 to 6 s, against terrazarr's 13 to 22 s
+at half its memory or less. That lead doesn't survive real data: on the 8.6 GB WSF-3D window,
+which still fits in RAM just as easily, terrazarr is faster, 25.6 s against
+topozarr's 32.7 s.
+- **terrazarr** stays fast and, unlike the others, its peak memory is set by its window size
+rather than the dataset, so it barely moves from the smallest synthetic raster up to the full
+286 GB, 36-billion-pixel WSF-3D Italy: 0.3 to 0.9 GB throughout, 314 s on the full raster at
+0.71 GB. topozarr, whose speed depends on levels fitting in RAM, takes 1006 s on that same
+raster once it has to fall back to reading levels back from the store, 3× terrazarr's time; GDAL
+finishes in 655 s at 8.8 GB, 12× terrazarr's memory.
+- **eopf-geozarr**, which needs the whole previous level as one numpy array per overview, cannot
+finish the full raster at all: given a 30 GB cap, it pinned at that cap after 42 minutes, one core
+busy, without writing a single data chunk, since level 0 alone is 286 GB, more than six times
+this machine's RAM.
 
-In short: topozarr wins on raw speed while the data fits in memory; terrazarr is
-the one that scales, because its memory use doesn't grow with the dataset at all.
+In short: topozarr's speed only wins on the smallest, most RAM-resident case; terrazarr wins
+everywhere else, including a real 8.6 GB raster that still fits in memory, and is the only one
+that scales, because its memory use doesn't grow with the dataset at all.
 
 ## Scaling
 
