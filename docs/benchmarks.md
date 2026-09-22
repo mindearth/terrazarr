@@ -25,7 +25,7 @@ a second time with the scenario's own method where that differs.
 
 ### WSF-3D Italy
 
-The World Settlement Footprint 3D layer over Italy (DLR, CC BY 4.0): building height in metres,
+The World Settlement Footprint 3D layer 2024 over Italy (DLR, CC BY 4.0): building height in metres,
 178 335 × 200 599 float64 pixels at 0.0000898° (about 10 m), 1.3 % of them non-zero. Two extents:
 
 - the **32768² window** at row 73 728, column 77 824 (Tuscany to Lazio), 8.6 GB uncompressed,
@@ -72,7 +72,7 @@ when it happened; peak memory, object counts and store traffic are stable.
 | writer | version | how it was run |
 |---|---|---|
 | terrazarr | this release | `terrazarr` CLI settings above, 8 single-threaded worker processes (or 8 threads where stated) |
-| eopf-geozarr | 0.11.0, installed from the `v0.11.0` tag of [EOPF-Explorer/data-model](https://github.com/EOPF-Explorer/data-model) (PyPI stops at 0.7.1) | `create_geozarr_dataset(spatial_chunk=4096, min_dimension=256, enable_sharding=True)` with the data under a child group, since a root-only tree writes nothing; 8 dask threads for level 0 |
+| eopf-geozarr | 0.11.0, installed from the `v0.11.0` tag of [EOPF-Explorer/data-model](https://github.com/EOPF-Explorer/data-model) | `create_geozarr_dataset(spatial_chunk=4096, min_dimension=256, enable_sharding=True)` with the data under a child group, since a root-only tree writes nothing; 8 dask threads for level 0 |
 | topozarr | 0.1.9 | `create_pyramid(levels, method="mean").write(max_workers=8)`, source opened lazily as its documentation advises |
 | GDAL | 3.13.3, official Docker image | `gdal_translate -of ZARR -co FORMAT=ZARR_V3 -co BLOCKSIZE=256,256 -co COMPRESS=ZSTD`, then `gdaladdo -r average` for the overviews, `GDAL_NUM_THREADS=8` |
 
@@ -97,152 +97,107 @@ How they differ, from their sources at these versions:
 Wall time is the whole run from the `time` wrapper (process start to exit, including the writers'
 own start-up); CPU is the wrapper's average utilisation, `container` where the writer ran in
 Docker and only its cgroup memory was polled; peak RSS is the maximum resident set of the
-process tree, with the dask workers of terrazarr and eopf-geozarr included; objects is the number
-of files in the output store. The last column compares the overview values with the reference
-described under [Data](#data): the largest absolute difference and the fraction of pixels that
-differ at level 1 and at the top level, and, where the column is present, the fraction that differs
-by more than 0.5, i.e. beyond integer rounding.
+process tree, with the dask workers of terrazarr and eopf-geozarr included. Object counts are
+covered in the notes below the tables, and how each writer's overview values compare with the
+reference described under [Data](#data) is covered separately, under
+[Correctness across writers](#correctness-across-writers).
 
 ### Synthetic scenarios, mean, 4 workers or threads
 
-| scenario | writer | wall [s] | CPU | peak RSS [GB] | objects | overview values vs terrazarr (max diff / pixels differing, level 1; last level) |
-|---|---|---:|---:|---:|---:|---|
-| s1: uint8 16384², sharded | terrazarr, 4 processes | 14.0 | 264 % | 0.28 | 75 | reference |
-| s1: uint8 16384², sharded | terrazarr, 4 threads | 12.8 | 172 % | 0.91 | 75 | reference |
-| s1: uint8 16384², sharded | eopf-geozarr 0.11.0 | 42.0 | 157 % | 2.13 | 57 | L1 60.2 / 70.1 %; last 65.5 / 93.8 % |
-| s1: uint8 16384², sharded | topozarr 0.1.9 | 4.7 | 408 % | 0.44 | 249 | L1 61 / 35.1 %; last 67 / 93.8 % |
-| s1: uint8 16384², sharded | GDAL 3.13.3 | 15.2 | container | 0.77 | 5237 | L1 1 / 11.7 %; last 2 / 68.2 % |
-| s1: uint8 16384², sharded | terrazarr, 4 processes, `min` | 13.2 | 274 % | 0.30 | 75 | its own method |
-| s2: uint8 16384², unsharded | terrazarr, 4 processes | 14.7 | 277 % | 0.26 | 5269 | reference |
-| s2: uint8 16384², unsharded | terrazarr, 4 threads | 17.8 | 158 % | 0.80 | 5269 | reference |
-| s2: uint8 16384², unsharded | eopf-geozarr 0.11.0 | 62.1 | 141 % | 1.99 | 57 | L1 60.2 / 70.1 %; last 65.5 / 93.8 % |
-| s2: uint8 16384², unsharded | topozarr 0.1.9 | 6.2 | 341 % | 0.42 | 249 | L1 61 / 35.1 %; last 67 / 93.8 % |
-| s2: uint8 16384², unsharded | GDAL 3.13.3 | 15.5 | container | 0.79 | 5237 | L1 1 / 11.7 %; last 2 / 68.2 % |
-| s3: uint8 8×8192², sharded | terrazarr, 4 processes | 15.8 | 303 % | 0.28 | 127 | reference |
-| s3: uint8 8×8192², sharded | terrazarr, 4 threads | 21.6 | 150 % | 0.96 | 127 | reference |
-| s3: uint8 8×8192², sharded | eopf-geozarr 0.11.0 | 96.8 | 161 % | 2.45 | 61 | L1 62 / 35.1 %; last 70 / 93.8 % |
-| s3: uint8 8×8192², sharded | topozarr 0.1.9 | 5.5 | 672 % | 0.63 | 327 | L1 62 / 35.1 %; last 70 / 93.8 % |
-| s3: uint8 8×8192², sharded | GDAL 3.13.3 | 19.4 | container | 0.74 | 10578 | L1 62 / 11.7 %; last 68 / 58.2 % |
-| s4: float32 12288², sharded | terrazarr, 4 processes | 15.8 | 246 % | 0.40 | 63 | reference |
-| s4: float32 12288², sharded | terrazarr, 4 threads | 16.3 | 137 % | 1.39 | 63 | reference |
-| s4: float32 12288², sharded | eopf-geozarr 0.11.0 | 42.1 | 339 % | 3.09 | 49 | L1 249 / 20.8 %; last 141 / 29.0 % |
-| s4: float32 12288², sharded | topozarr 0.1.9 | 4.5 | 404 % | 0.84 | 302 | L1 0 / 0.0 %; last 0 / 0.0 % |
-| s4: float32 12288², sharded | GDAL 3.13.3 | 39.0 | container | 1.74 | 2990 | L1 0 / 0.0 %; last 0 / 0.0 % |
-| s4: float32 12288², sharded | terrazarr, 4 processes, `median` | 21.6 | 302 % | 0.76 | 63 | its own method |
+![Wall time by writer, synthetic scenarios s1-s4](assets/bench-synthetic-wall.svg)
+![Peak memory by writer, synthetic scenarios s1-s4](assets/bench-synthetic-memory.svg)
 
-### WSF-3D Italy, 32768² window
+CPU utilisation and object counts aren't in the charts; the table below each scenario has the
+full precision.
 
-| writer | wall [s] | CPU | peak RSS [GB] | objects | overview values vs the reference (max diff / pixels differing, level 1; last level) |
-|---|---:|---:|---:|---:|---|
-| terrazarr, 8 processes | 25.6 | 728 % | 0.54 | 148 | L1 0 / 0.0 % (0.0 % beyond rounding); last 0 / 0.0 % (0.0 % beyond rounding) |
-| terrazarr, 8 threads | 37.0 | 251 % | 2.31 | 148 | L1 0 / 0.0 % (0.0 % beyond rounding); last 0 / 0.0 % (0.0 % beyond rounding) |
-| eopf-geozarr 0.11.0 | 460.2 | 382 % | 18.66 | 67 | L1 128 / 1.5 % (0.7 % beyond rounding); last 9.79 / 42.1 % (3.0 % beyond rounding) |
-| topozarr 0.1.9 | 32.7 | 359 % | 2.93 | 2108 | L1 128 / 1.6 % (0.7 % beyond rounding); last 9.79 / 42.1 % (3.0 % beyond rounding) |
-| GDAL 3.13.3 | 34.4 | container | 2.20 | 21865 | L1 128 / 1.5 % (0.7 % beyond rounding); last 9.79 / 42.1 % (3.0 % beyond rounding) |
+#### s1: uint8 16384², sharded
 
-### WSF-3D Italy, full
+| writer | wall [s] | CPU | peak RSS [GB] |
+|---|---:|---:|---:|
+| terrazarr, 4 processes | 14.0 | 264 % | 0.28 |
+| terrazarr, 4 threads | 12.8 | 172 % | 0.91 |
+| eopf-geozarr 0.11.0 | 42.0 | 157 % | 2.13 |
+| topozarr 0.1.9 | 4.7 | 408 % | 0.44 |
+| GDAL 3.13.3 | 15.2 | container | 0.77 |
+| terrazarr, 4 processes, `min` | 13.2 | 274 % | 0.30 |
 
-| writer | wall [s] | CPU | peak RSS [GB] | objects | overview values vs the reference (max diff / pixels differing, level 1; last level) |
-|---|---:|---:|---:|---:|---|
-| terrazarr, 8 processes | 313.6 | 1427 % | 0.71 | 2178 | L1 0 / 0.0 % (0.0 % beyond rounding); last 0 / 0.0 % (0.0 % beyond rounding) |
-| eopf-geozarr 0.11.0 | stopped after 42 min | – | – | – | RSS pinned at the 30 GB cap, 6.0 GB spilled to disk, 3.9 GB in cgroup swap, about one core busy, no data chunk written (14 metadata objects in the store) |
-| topozarr 0.1.9 | 1006.4 | 364 % | 1.25 | 41361 | L1 128 / 0.5 % (0.2 % beyond rounding); last 9.41 / 18.5 % (1.1 % beyond rounding) |
-| GDAL 3.13.3 | 654.8 | container | 8.82 | 430602 | L1 147 / 0.9 % (0.4 % beyond rounding); last 10.8 / 19.5 % (1.2 % beyond rounding) |
+#### s2: uint8 16384², unsharded
 
-**What the tables say.**
+| writer | wall [s] | CPU | peak RSS [GB] |
+|---|---:|---:|---:|
+| terrazarr, 4 processes | 14.7 | 277 % | 0.26 |
+| terrazarr, 4 threads | 17.8 | 158 % | 0.80 |
+| eopf-geozarr 0.11.0 | 62.1 | 141 % | 1.99 |
+| topozarr 0.1.9 | 6.2 | 341 % | 0.42 |
+| GDAL 3.13.3 | 15.5 | container | 0.79 |
 
-- **Synthetic scenarios.** topozarr is the fastest writer on rasters that fit in RAM, its
-  fused level-0 copy and Rust reduce kernel finishing s1 to s4 in 4.5 to 6 s; terrazarr takes
-  13 to 22 s at half of its memory or less, GDAL 15 to 39 s and eopf-geozarr 42 to 97 s at 2 to
-  3 GB. The `min` and `median` rows are terrazarr with the scenario's own method, which the
-  other writers do not offer.
-  The synthetic and window runs were made while another job loaded the machine (load 10 to 20 on
-  24 cores), so their wall times are upper bounds; the memory and object counts are not affected.
-  The value differences come from the nodata rule, not from bugs: the synthetic rasters carry a
-  diagonal band of nodata and an all-nodata block, eopf-geozarr and topozarr average the zeros in and so
-  differ from terrazarr on 35 to 70 % of the level-1 pixels, by up to the full data range;
-  GDAL honours the numeric fill value and matches terrazarr within integer rounding on s1 and s2
-  (a difference of 1 on 12 % of the pixels, where the two round a half differently); on s3 the
-  same 12 % differ, by more where the null fill value of its (band, y, x) output was patched to
-  0 to make it readable. On s4, whose nodata is NaN, topozarr and GDAL are exact; eopf-geozarr's
-  NaN propagation blanks every block that touches the nodata band, 21 % of level 1.
-- **Object counts.** terrazarr and eopf-geozarr write one object per shard, topozarr four to
-  eight times as many (its own shard choice), GDAL one per 256² chunk since its classic Zarr
-  driver has no sharding: 21 865 objects for the window and 430 602 for full Italy against 148
-  and 2 178. On an object store that difference is the cost of the pyramid.
-- **WSF-3D Italy window.** The 8.6 GB window is where the execution models separate:
-  terrazarr finishes in 26 s at 0.54 GB, topozarr and GDAL in 33 to 34 s at 2 to 3 GB,
-  eopf-geozarr in 460 s at 18.7 GB, the whole level 0 in numpy twice over. The three others
-  agree with each other and differ from the reference on 1.5 % of the level-1 pixels, by up to
-  128 m, because they average the zeros of "no building" into the heights; at the top level
-  42 % of the pixels differ, 3 % of them beyond rounding, and the map at the coarse levels shows
-  buildings where there are none. GDAL's levels are one pixel larger than the reference's
-  (rounded up rather than trimmed), so its values are compared over the common extent.
-- **Full WSF-3D Italy.** 286 GB uncompressed, 36 billion pixels. terrazarr writes the ten
-  levels in 314 s at 0.71 GB of peak memory, all 24 cores busy; topozarr takes 1006 s at 1.25 GB
-  and GDAL 655 s at 8.8 GB. eopf-geozarr 0.11.0 was given the same input under a 30 GB memory
-  cap with dask spilling to the local disk: after 42 minutes its resident memory was pinned at the
-  cap, 6 GB had been spilled and 4 GB swapped, one core was busy and not one data chunk of level 0
-  had been written, at which point it was stopped. Level 0 alone is 286 GB in the numpy array it
-  needs for level 1, so the run could not have completed on this machine, or on any machine with
-  less than about 600 GB of RAM.
+#### s3: uint8 8×8192² (t, y, x), sharded
+
+| writer | wall [s] | CPU | peak RSS [GB] |
+|---|---:|---:|---:|
+| terrazarr, 4 processes | 15.8 | 303 % | 0.28 |
+| terrazarr, 4 threads | 21.6 | 150 % | 0.96 |
+| eopf-geozarr 0.11.0 | 96.8 | 161 % | 2.45 |
+| topozarr 0.1.9 | 5.5 | 672 % | 0.63 |
+| GDAL 3.13.3 | 19.4 | container | 0.74 |
+
+#### s4: float32 12288², sharded
+
+| writer | wall [s] | CPU | peak RSS [GB] |
+|---|---:|---:|---:|
+| terrazarr, 4 processes | 15.8 | 246 % | 0.40 |
+| terrazarr, 4 threads | 16.3 | 137 % | 1.39 |
+| eopf-geozarr 0.11.0 | 42.1 | 339 % | 3.09 |
+| topozarr 0.1.9 | 4.5 | 404 % | 0.84 |
+| GDAL 3.13.3 | 39.0 | container | 1.74 |
+| terrazarr, 4 processes, `median` | 21.6 | 302 % | 0.76 |
+
+### WSF-3D Italy, window and full
+
+![Wall time by writer, WSF-3D Italy window and full](assets/bench-wsf-wall.svg)
+![Peak memory by writer, WSF-3D Italy window and full](assets/bench-wsf-memory.svg)
+
+#### 32768² window
+
+| writer | wall [s] | CPU | peak RSS [GB] |
+|---|---:|---:|---:|
+| terrazarr, 8 processes | 25.6 | 728 % | 0.54 |
+| terrazarr, 8 threads | 37.0 | 251 % | 2.31 |
+| eopf-geozarr 0.11.0 | 460.2 | 382 % | 18.66 |
+| topozarr 0.1.9 | 32.7 | 359 % | 2.93 |
+| GDAL 3.13.3 | 34.4 | container | 2.20 |
+
+#### Full
+
+| writer | wall [s] | CPU | peak RSS [GB] |
+|---|---:|---:|---:|
+| terrazarr, 8 processes | 313.6 | 1427 % | 0.71 |
+| eopf-geozarr 0.11.0 | stopped after 42 min | – | – |
+| topozarr 0.1.9 | 1006.4 | 364 % | 1.25 |
+| GDAL 3.13.3 | 654.8 | container | 8.82 |
 
 
-## Correctness across writers
 
-Checked on the writers' own outputs at the versions above (`bench/tools/check_levels.py` on the
-WSF-3D window and on a 1002² synthetic raster, `bench/tools/compare_any.py` for the values).
+- **topozarr** is the fastest writer on data that fits in RAM: its fused
+level-0 copy and Rust reduce kernel finish the synthetic scenarios in 4.5 to 6 s and the 8.6 GB WSF-3D window in 32.7 s. 
+- **terrazarr** trails it closely at a fraction of the memory (13 to 22 s and 26 s, at half topozarr's peak RSS or less) and that gap flips as the input stops fitting in RAM. terrazarr's peak memory is set by its window size, not by the dataset, so it stays at 0.3 to 0.9 GB from the smallest synthetic raster up to the full 286 GB, 36-billion-pixel WSF-3D Italy: 314 s at 0.71 GB, barely more than on the window. topozarr, whose speed depends on levels
+fitting in RAM, takes 1006 s on the same raster, 3× terrazarr's time, once it has to fall back to
+reading levels back from the store; GDAL finishes in 655 s at 8.8 GB, 12× terrazarr's memory.
+- **eopf-geozarr**, which needs the whole previous level as one numpy array per overview, cannot finish it at all: given a 30 GB cap, it pinned at that cap after 42 minutes, one core busy,
+without writing a single data chunk, since level 0 alone is 286 GB, more than six times this
+machine's RAM. 
 
-**Nodata in overviews.** WSF-3D is 98.7 % zeros, and zero means "no building". terrazarr excludes
-a numeric nodata from the mean and blanks a block below 30 % valid, so the fraction of zero
-pixels stays at 97–99 % through the levels. eopf-geozarr 0.11.0 carries fill values as metadata,
-a source `_FillValue` is kept on level 0 and every overview gets NaN as fill, but neither its
-multiscales data model nor its converter has a nodata rule: the reducer accepts a nodata value
-and is called without one, a numeric nodata cannot be passed through the API, and zeros are
-averaged in. topozarr averages zeros in likewise, NaN aside. GDAL honours a numeric zarr fill
-value as nodata, so on the synthetic rasters, whose fill is 0, its overviews match terrazarr's
-within rounding; on WSF-3D, whose fill is NaN, it averages zeros in. The effect on the window:
-the zero fraction of the top level is 97 % for terrazarr and 58 % for the other three, and the
-level-1 values differ on 1.5 % of the pixels by up to 128 m. All three others agree with each
-other on that.
-
-**CRS on every level.** terrazarr and eopf-geozarr 0.11.0 write a CF `spatial_ref` grid mapping
-in every level group, so rioxarray reads the CRS and transform at any level. topozarr writes the
-CRS once, as `proj:*` attributes of the root under the proj convention, and no per-level grid
-mapping, so a level opened on its own has no CRS for rioxarray. GDAL's Zarr output carries the
-multiscales attribute and its own georeferencing arrays; rioxarray does not recover a transform
-from it, GDAL itself does.
-
-**Pixel size of the overviews.** terrazarr's level L pixel is exactly `2**L` native pixels at
-every level, anchored on the native top-left corner. eopf-geozarr 0.11.0 stretches the native
-extent over the trimmed level shape: on a 1002² raster its level 2 pixel is 4.008 native pixels
-and its level 4 pixel 16.16; the drift only vanishes where the shape divides evenly, as on the
-32768² window. topozarr is exact. GDAL rounds the level size up rather than down (89 168 rows
-where the others have 89 167 on full Italy) and stretches the extent over it.
-
-**Dtype and rounding.** eopf-geozarr writes float64 overviews whatever the source; the others
-keep the source dtype, terrazarr and GDAL rounding integer means to nearest and topozarr
-truncating.
-
-**Execution model of eopf-geozarr 0.11.0.** The data-model rewrite changed the metadata layer,
-not the writer: level 0 goes through dask, then every overview is computed from the whole
-previous level as one numpy array (`ds[var].values`). On the WSF-3D window that is the full
-8.6 GB level 0 in memory plus the reduction's temporaries; on full Italy level 0 is 286 GB,
-more than six times the machine's RAM, and the attempt in [Results](#results) shows how it ends.
-
-**Interoperability notes.** GDAL 3.13.3 writes `fill_value: null` for the arrays of a
-(band, y, x) raster, which zarr-python 3.1.6 refuses to open; the s3 comparison patched those
-fill values to 0 first. eopf-geozarr writes nothing for a root-only DataTree; the data has to
-sit under a child group, and that group is level 0 with the overviews as `r2`, `r4`, ... below it.
-
+In short: topozarr wins on raw speed while the data fits in memory; terrazarr is
+the one that scales, because its memory use doesn't grow with the dataset at all.
 
 ## Scaling
 
 The memory of a writer that builds one dask graph for level 0 grows with the number of shard
 tasks, not with the pixel count: measured on metadata-only inputs, the main process needs about
 40 KB per level-0 shard task, linear from 64 to 65 536 tasks. A 2.26 M × 2.19 M four-band image
-at 4096² shards is 1.18 million such tasks, 45 to 55 GB before a pixel is read, which is where an
-earlier version of terrazarr died at 70 GB. Writing level 0 in windows bounds the graph by the
+at 4096² shards is 1.18 million such tasks, 45 to 55 GB before a pixel is read. 
+
+terrazarr writes level 0 in windows bounds the graph by the
 window instead: the same 16 384-task raster peaks at 0.27 GB in the main process, and the size
 of the raster no longer enters. Worker memory scales with the block: about four times the
 block's bytes per worker for a band-last input, one shard and its reduction otherwise.

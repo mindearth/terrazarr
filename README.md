@@ -9,19 +9,27 @@ Documentation: [mindearth.github.io/terrazarr](https://mindearth.github.io/terra
 [eopf-geozarr](https://github.com/EOPF-Explorer/data-model), written by Development Seed for
 ESA, turns Sentinel products into GeoZarr multiscale pyramids: native CRS, `/2` overviews, a tile
 matrix set, consolidated metadata. It is built for a scene, a few thousand pixels a side, and it
-computes every overview level from the whole previous level as one array in memory.
+computes every overview level from the whole previous level as one array in memory — fine at
+scene size, but a design that runs out of memory or runs for days once the raster stops being
+scene-sized.
 
-We needed the same output for rasters that are not scenes: a 178 335 × 200 599 float64 layer of
-Italy, and a 20 cm orthophoto of the whole country, 2 263 040 × 2 191 360 pixels in four bands.
-On those the scene-sized design either ran out of memory or ran for days. terrazarr is the
-rewrite of that pipeline for that scale, keeping its metadata layout and its function skeleton:
+terrazarr is a rewrite of that pipeline for rasters of any size, keeping the same metadata layout
+and output shape, so it's a drop-in for anyone with an xarray object and a CRS who has outgrown
+the scene-sized assumption. Reach for it if you need:
 
+- **Low, flat memory use.** Peak memory doesn't grow with the raster: task memory is always one
+  shard, and the main process' graph is bounded by a window rather than by the whole raster. A
+  raster with a million-plus level-0 shard tasks still peaks under a gigabyte, where a writer
+  that loads a whole level into memory first needs tens of gigabytes before it reads a pixel.
+- **Real scalability.** The same lazy, windowed, shard-aligned execution applies unchanged from
+  a single scene to a raster with billions of pixels — no separate code path or reconfiguration
+  for "big" inputs, no ceiling where it stops working.
 - **Lazy end to end.** Level 0 is one task per output shard, level 1 is reduced inside the same
-  task, every further level reads its parent shards from the store one at a time. Task memory
-  is one shard whatever the raster.
-- **Windowed and resumable.** Level 0 is written in windows, one dask compute each, so the
-  graph in the main process is bounded by the window and not by the raster; each window done
-  is recorded, and an interrupted run finishes from the missing ones.
+  task, every further level reads its parent shards from the store one at a time; nothing is
+  ever materialised as a whole array in memory.
+- **Resumable.** Level 0 is written in windows and each one done is recorded, so an interrupted
+  run — a killed job, a preempted spot instance — finishes from the missing windows instead of
+  starting over.
 - **Store-aware.** One read per input block, shard-aligned reads and writes, all-nodata blocks
   never touch the store, and a band-last image is read and transposed once per block.
 - **Exact.** Level L has exactly `2**L` native pixels per pixel, anchored top-left; nodata is a
@@ -75,12 +83,23 @@ WSF-3D Italy, a 178 335 × 200 599 float64 raster (286 GB uncompressed) and its 
 written as a ten-level (eight-level) pyramid with 256² chunks in 4096² shards, same machine
 (24 cores, 43 GB), same settings wherever a writer takes them:
 
-| writer | 32768² window | full Italy |
+**32768x32768 float64**
+
+| writer | wall time | peak memory |
 |---|---|---|
-| terrazarr, 8 processes | 26 s, 0.5 GB | 314 s, 0.7 GB |
-| eopf-geozarr 0.11.0 | 460 s, 18.7 GB | stopped after 42 min at a 30 GB cap, nothing written |
-| topozarr 0.1.9 | 33 s, 2.9 GB | 1006 s, 1.3 GB |
-| GDAL 3.13.3 | 34 s, 2.2 GB | 655 s, 8.8 GB |
+| terrazarr, 8 processes | 26 s | 0.5 GB |
+| eopf-geozarr 0.11.0 | 460 s | 18.7 GB |
+| topozarr 0.1.9 | 33 s | 2.9 GB |
+| GDAL 3.13.3 | 34 s | 2.2 GB |
+
+**178 335 × 200 599 float64**
+
+| writer | wall time | peak memory |
+|---|---|---|
+| terrazarr, 8 processes | 314 s | 0.7 GB |
+| eopf-geozarr 0.11.0 | stopped after 42 min, nothing written | 30 GB cap |
+| topozarr 0.1.9 | 1006 s | 1.3 GB |
+| GDAL 3.13.3 | 655 s | 8.8 GB |
 
 Wall time and peak memory of the whole process tree. terrazarr keeps a numeric nodata out of
 the overviews, GDAL does so when the source fill value is numeric, eopf-geozarr and topozarr

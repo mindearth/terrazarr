@@ -5,8 +5,8 @@
 """
 terrazarr: multiscale GeoZarr pyramids for rasters of any size.
 
-`to_geozarr` writes an xarray object as a GeoZarr multiscale pyramid, GeoZarr-spec 0.4 and
-zarr-conventions (multiscales, proj, spatial) compliant, in the native CRS with /2 downsampling.
+`to_geozarr` writes an xarray object as a GeoZarr multiscale pyramid, compliant with the
+zarr-conventions (multiscales, proj, spatial), in the native CRS with /2 downsampling.
 
 Compliance features:
 - _ARRAY_DIMENSIONS attributes on all arrays

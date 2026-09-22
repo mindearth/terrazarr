@@ -6,6 +6,9 @@ authors:
   - family-names: Asaro
     given-names: Francesco
     affiliation: MindEarth
+  - family-names: Oldani
+    given-names: Federico
+    affiliation: MindEarth
 license: Apache-2.0
 repository-code: "https://github.com/mindearth/terrazarr"
 url: "https://mindearth.github.io/terrazarr"

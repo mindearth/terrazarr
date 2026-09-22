@@ -59,10 +59,9 @@ carries their attributes:
 | proj | v1 | `proj:code`, `proj:wkt2` |
 | spatial | v1 | `spatial:dimensions`, `spatial:bbox`, `spatial:transform`, `spatial:registration` (`pixel`) |
 
-The root also carries a native-CRS tile matrix set and tile matrix limits in the GeoZarr 0.4
-form (`tile_matrix_set`, `tile_matrix_limits`), one tile matrix per level with the chunk as tile,
-which is what the [EOPF GeoZarr data model](https://eopf-explorer.github.io/data-model/) and
-TiTiler's GeoZarr reader consume. Metadata is consolidated at every level and at the root.
+The root also carries a native-CRS tile matrix set and tile matrix limits in the form
+(`tile_matrix_set`, `tile_matrix_limits`), one tile matrix per level with the chunk as tile,
+used by the [EOPF GeoZarr data model](https://eopf-explorer.github.io/data-model/). Metadata is consolidated at every level and at the root.
 Arrays are zarr v3 with the sharding codec when `sharding` is on (chunks of `chunk_size²`
 inside shards of `shard_size²`), Blosc-compressed by default, with the fill value NaN for
 floating-point data and the dtype's zero otherwise; a numeric `nodata` is excluded from every
