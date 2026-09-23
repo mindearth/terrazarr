@@ -1,0 +1,104 @@
+"""Compare a pyramid written by any tool with a reference pyramid, level by level, matched by shape.
+
+    python bench/tools/compare_any.py REF.zarr OTHER.zarr [--var data] [--chunk 4096] [--threads 4]
+
+Walks every group of OTHER, finds the arrays named --var (or the single array of a group for
+GDAL, whose level-0 array carries the store name), and pairs each with the reference level of the
+same shape. Prints max |diff| and the fraction of differing pixels, NaN counted as 0, streamed in
+--chunk² dask blocks so any level fits in memory.
+"""
+from __future__ import annotations
+
+import argparse
+
+import dask
+import dask.array as da
+import zarr
+
+
+def arrays_from_disk(path: str, var: str) -> dict[str, zarr.Array]:
+    """Fallback for local stores whose group cannot be traversed by zarr-python (e.g. an array
+    with a null fill value on an integer dtype, as GDAL 3.13 writes for a coordinate): open every
+    array found on disk on its own and keep the 2D/3D data ones."""
+    import json
+    import os
+
+    out = {}
+    for root, _dirs, files in os.walk(path):
+        if "zarr.json" not in files:
+            continue
+        meta = json.load(open(os.path.join(root, "zarr.json")))
+        if meta.get("node_type") != "array" or len(meta.get("shape", [])) < 2:
+            continue
+        rel = os.path.relpath(root, path).replace(os.sep, "/")
+        name = rel.rsplit("/", 1)[-1]
+        if name in ("x", "y", "X", "Y", "lat", "lon", "spatial_ref"):
+            continue
+        try:
+            out[rel] = zarr.open_array(os.path.join(path, rel), mode="r")
+        except Exception:  # noqa: BLE001
+            # zarr-python refuses it; GDAL reads its own output, so go through rasterio (in memory,
+            # which the synthetic sizes allow; a (band, y, x) array comes back as bands)
+            try:
+                import rasterio
+
+                with rasterio.open(f'ZARR:"{os.path.abspath(path)}":/{rel}') as d:
+                    data = d.read()
+                out[rel] = data if len(meta["shape"]) == 3 else data[0]
+                print(f"({rel}: read through rasterio)")
+            except Exception as e2:  # noqa: BLE001
+                print(f"({rel}: unreadable: {type(e2).__name__}: {str(e2)[:60]})")
+    return out
+
+
+def open_arrays(path: str, var: str) -> dict[str, zarr.Array]:
+    try:
+        return arrays(zarr.open_group(path, mode="r", use_consolidated=False), var)
+    except Exception as e:  # noqa: BLE001
+        print(f"(group traversal failed: {type(e).__name__}: {str(e)[:60]}; walking the store on disk)")
+        return arrays_from_disk(path, var)
+
+
+def arrays(root: zarr.Group, var: str) -> dict[str, zarr.Array]:
+    out = {}
+    def walk(g: zarr.Group, prefix: str) -> None:
+        keys = list(g.array_keys())
+        cands = [k for k in keys if k == var] or [k for k in keys if g[k].ndim >= 2 and k not in ("x", "y", "X", "Y", "lat", "lon", "spatial_ref")]
+        for k in cands:
+            out[f"{prefix}/{k}".lstrip("/")] = g[k]
+        for k in g.group_keys():
+            walk(g[k], f"{prefix}/{k}")
+    walk(root, "")
+    return out
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("ref"); p.add_argument("other")
+    p.add_argument("--var", default="data"); p.add_argument("--chunk", type=int, default=4096); p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--crop", type=int, default=0, help="also pair a level up to this many pixels larger than the reference on each axis, comparing the top-left overlap (GDAL rounds overview sizes up)")
+    a = p.parse_args()
+    ref = {v.shape: v for v in open_arrays(a.ref, a.var).values()}
+    other = open_arrays(a.other, a.var)
+    print(f"{'other array':>28} {'shape':>16} {'ref?':>5} {'max|diff|':>10} {'frac diff':>10} {'frac>0.5':>9} {'dtype':>8}")
+    with dask.config.set(scheduler="threads", num_workers=a.threads):
+        for name, arr in sorted(other.items(), key=lambda kv: -kv[1].shape[-1]):
+            r = ref.get(arr.shape); tag = "yes"
+            if r is None and a.crop:
+                for sh, cand in ref.items():
+                    if all(0 <= o - c <= a.crop for o, c in zip(arr.shape, sh)):
+                        r = cand; tag = "crop"; break
+            if r is None:
+                print(f"{name:>28} {str(arr.shape):>16} {'no':>5} {'-':>10} {'-':>10} {'-':>9} {str(arr.dtype):>8}"); continue
+            # 2D levels, or (t, y, x) levels: one slice per block on the leading axis
+            ch = (1,) * (arr.ndim - 2) + (a.chunk, a.chunk)
+            x = da.from_array(arr, chunks=ch)[(...,) + tuple(slice(0, n) for n in r.shape[-2:])].astype("float64")
+            y = da.from_array(r, chunks=(1,) * (r.ndim - 2) + (a.chunk, a.chunk)).astype("float64")
+            d = da.fabs(da.nan_to_num(x) - da.nan_to_num(y))
+            # frac>0.5 leaves out rounding: a float overview against a rounded integer one
+            m, f, f5 = dask.compute(d.max(), (d > 0).mean(), (d > 0.5).mean())
+            print(f"{name:>28} {str(arr.shape):>16} {tag:>5} {float(m):>10.3g} {float(f):>10.4f} {float(f5):>9.4f} {str(arr.dtype):>8}")
+
+
+if __name__ == "__main__":
+    main()

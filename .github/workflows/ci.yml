@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # setuptools-scm needs the tags
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          uv venv --clear .venv
+          uv pip install --python .venv/bin/python -e . --group dev
+      - name: Lint
+        run: .venv/bin/ruff check src tests examples bench
+      - name: Tests
+        run: .venv/bin/python -m pytest -q
+      - name: Example (synthetic, no download)
+        run: .venv/bin/python examples/01_synthetic.py
+      - name: Synthetic benchmark smoke test
+        if: matrix.python == '3.12'
+        run: .venv/bin/python bench/run_one.py --impl optimized --input bench/data/smoke_u8.zarr --output /tmp/smoke.zarr --shard-size 512 --chunk-size 128 --method mean --nodata 0 --sharding --threads 2 --quiet | tail -1

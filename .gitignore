@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+bench/out/
+bench/data/
+.pytest_cache/
+.venv-baseline/
+.venv-ft/
+.venv-eopf/
+.venv-topozarr/
+site/
+.env
+uv.lock
