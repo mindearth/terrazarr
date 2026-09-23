@@ -1,0 +1,75 @@
+[project]
+name = "terrazarr"
+dynamic = ["version"]
+description = "GeoZarr multiscale pyramids for planetary-scale rasters: lazy, windowed, resumable (zarr v3, sharded)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Francesco Asaro", email = "francesco.asaro@mindearth.ch" }]
+requires-python = ">=3.11"
+keywords = ["geozarr", "zarr", "multiscale", "pyramid", "overviews", "dask", "xarray", "cloud-native", "geospatial"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+    "dask[array,distributed]>=2025.1",
+    "xarray>=2025.1",
+    "zarr>=3.0",
+    "numpy>=2.0",
+    "rioxarray>=0.17",
+    "rasterio>=1.4",
+    "pyproj>=3.6",
+    "affine>=2.4",
+    "fsspec>=2024.1",
+    "s3fs>=2024.1",
+    "obstore>=0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/mindearth/terrazarr"
+Documentation = "https://mindearth.github.io/terrazarr"
+Changelog = "https://github.com/mindearth/terrazarr/blob/main/CHANGELOG.md"
+Issues = "https://github.com/mindearth/terrazarr/issues"
+Upstream = "https://github.com/EOPF-Explorer/data-model"
+
+[project.scripts]
+terrazarr = "terrazarr.cli:main"
+geozarr-pyramid = "terrazarr.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
+
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+# version from git tags (v0.2.0 -> 0.2.0); untagged commits get a dev suffix
+fallback_version = "0.0.0"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# the benchmark harness and the examples are scripts; one-liners are fine there
+"bench/**" = ["E701", "E702", "E401"]
+"examples/**" = ["E701", "E702", "E401"]
