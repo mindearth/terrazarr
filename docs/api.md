@@ -31,6 +31,7 @@ terrazarr --input IN --output OUT [options]
 | `--compressor`, `--clevel` | `zstd`, 3 | Blosc codec and level for every level's data; `none` for uncompressed |
 | `--workers`, `--threads-per-worker`, `--memory-limit` | 8, 1, `auto` | the dask cluster; several single-threaded processes beat one multi-threaded one, since zarr assembles chunks on one event loop per process |
 | `--window-shards` | 32 | level-0 blocks per axis and per window; the main process holds one window's graph at a time |
+| `--resume` | off | check an existing level 0: skip it when its completion marker says complete, write only the windows an interrupted run left out; a level 0 without a marker is rewritten. Without `--resume`, a valid level 0 is used as it is, without checking that it is complete, and an absent or invalid one is written from scratch |
 
 The input is a zarr store, local or `s3://`, with `y` and `x` dimensions and a CRS; S3
 credentials come from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and, for S3-compatible
@@ -72,6 +73,9 @@ centre of each block.
 
 Level 0 (with level 1, which is reduced from the same blocks) is written in windows, and the
 level-0 group records every window done in the attribute `terrazarr:windows_done` and sets
-`terrazarr:level0_complete` at the end. Running `to_geozarr` again on an interrupted store
-finishes the missing windows and does not rewrite the rest; a complete store is left untouched.
+`terrazarr:level0_complete` at the end. Running `to_geozarr(..., resume=True)` (`--resume`) again on an interrupted store
+finishes the missing windows and does not rewrite the rest; a complete store is left untouched,
+and a level 0 without a marker cannot be checked and is rewritten. Without `resume`, a valid
+level 0 on the store is used as it is, even if an interrupted run left it incomplete, and an
+absent or invalid one is written from scratch.
 Every further level is built from the previous one on the store and skipped when present.

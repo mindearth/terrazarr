@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Level-0 resume is now opt-in: `resume=True` / `--resume` checks the completion marker, skips a
+  complete level 0 and writes only the windows an interrupted run left out. By default a valid level
+  0 already on the store is used as it is, and an absent or invalid one is written from scratch.
+
 ## [0.1.2] - 2026-09-23
 
 Initial release.

@@ -469,6 +469,7 @@ def to_geozarr(
     min_dimension: int | None = None,
     compressor: Any = DEFAULT_COMPRESSOR,
     window_shards: int | None = None,
+    resume: bool = False,
     max_retries: int = 3,
     crs_groups: Iterable[str] | None = None,
     gcp_group: str | None = None,
@@ -515,6 +516,12 @@ def to_geozarr(
     window_shards : int, optional
         Level 0 is written in windows of this many blocks per axis, one dask compute each
         (default 32). Bounds the memory of the process that holds the dask graph.
+    resume : bool, default False
+        What to do with a level 0 already on the store. ``False``: use it as it is when it
+        is valid, without checking that it is complete, and write it from scratch when it is
+        absent or invalid. ``True``: check the completion marker of the level, skip a
+        complete level and write only the windows an interrupted run left out; a level
+        without a marker cannot be resumed and is rewritten.
     max_retries : int, default 3
         Attempts per window, and per band in the fallback path.
     crs_groups, gcp_group : optional
@@ -578,6 +585,7 @@ def to_geozarr(
         method=method,
         nodata_value=nodata_value,
         window_shards=window_shards,
+        resume=resume,
     )
 
     # Consolidate metadata at the root level AFTER all groups are written
@@ -672,6 +680,7 @@ def iterative_copy(
     method: str = "mean",
     nodata_value: float | None = None,
     window_shards: int | None = None,
+    resume: bool = False,
 ) -> xr.DataTree:
     """
     Iteratively copy groups from original DataTree to GeoZarr DataTree.
@@ -687,7 +696,7 @@ def iterative_copy(
     compressor : Any
         Compressor to use for encoding
     shard_size, min_dimension, chunk_size, max_retries, crs_groups, gcp_group,
-    enable_sharding, method, nodata_value
+    enable_sharding, method, nodata_value, resume
         See :func:`to_geozarr`
 
     Returns
@@ -713,6 +722,7 @@ def iterative_copy(
         method=method,
         nodata_value=nodata_value,
         window_shards=window_shards,
+        resume=resume,
     )
 
     # Process all groups in the tree using iterative approach
@@ -845,6 +855,7 @@ def write_geozarr_group(
     method: str = "mean",
     nodata_value: float | None = None,
     window_shards: int | None = None,
+    resume: bool = False,
 ) -> xr.DataTree:
     """
     Write a group to a GeoZarr dataset with multiscales support.
@@ -901,13 +912,22 @@ def write_geozarr_group(
     level0_path = _join_path(group_path, 0)
     existing_native_dataset = _load_existing_dataset(store, level0_path, shard_size)
 
-    if (
-        _is_level_complete(existing_native_dataset, _data_vars_to_check)
-        and _is_level_valid(existing_native_dataset)
-        and _read_window_marker(store, level0_path)[1]
-    ):
+    level0_valid = _is_level_complete(
+        existing_native_dataset, _data_vars_to_check
+    ) and _is_level_valid(existing_native_dataset)
+    if resume:
+        # A level is reused only when its marker says it is complete.
+        use_existing = level0_valid and _read_window_marker(store, level0_path)[1]
+    else:
+        # A valid level 0 is used as it is: no marker, no completeness check.
+        use_existing = level0_valid and all(
+            utils.validate_existing_band_data(existing_native_dataset, var, ds)
+            for var in _data_vars_to_check
+        )
+
+    if use_existing:
         print(
-            f"Level 0 already exists and is complete at {level0_path}, "
+            f"Level 0 already exists at {level0_path}, "
             "loading from store and skipping write..."
         )
         ds = _normalize_north_up(existing_native_dataset)
@@ -964,6 +984,7 @@ def write_geozarr_group(
             False,
             fused_level=fused_level,
             window_shards=window_shards,
+            resume=resume,
         )
         if not success:
             raise RuntimeError(f"Failed to write all bands for {group_name}")
@@ -1740,6 +1761,7 @@ def write_dataset_band_by_band_with_validation(
     force_overwrite: bool = False,
     fused_level: tuple[str, dict[str, Any], Any] | None = None,
     window_shards: int | None = None,
+    resume: bool = False,
 ) -> tuple[bool, xr.Dataset]:
     """
     Write dataset band by band with individual band validation.
@@ -1776,6 +1798,9 @@ def write_dataset_band_by_band_with_validation(
         ``(path, dataset, encoding)``, used once to create the level-1 metadata.
     window_shards : int, optional
         Dask blocks per axis and per window (default ``WINDOW_SHARDS``, even).
+    resume : bool, default False
+        Continue from the windows the marker lists; when False the windows done are ignored
+        and the level is written from scratch.
 
     Returns
     -------
@@ -1802,7 +1827,7 @@ def write_dataset_band_by_band_with_validation(
         raise ValueError(f"window_shards must be even and >= 2, got {window_shards}")
 
     done, complete, done_size = _read_window_marker(store, group_path)
-    resume = bool(done) and not complete and done_size == window_shards and not force_overwrite
+    resume = resume and bool(done) and not complete and done_size == window_shards and not force_overwrite
     if not resume:
         done = set()
     resumed_vars: list[Hashable] = []   # arrays kept from the interrupted run: metadata exists
