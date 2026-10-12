@@ -108,6 +108,33 @@ The full comparison, on synthetic rasters as
 well, with the writers' characteristics and the correctness checks: [benchmarks](https://mindearth.github.io/terrazarr/benchmarks/). The
 [demo](https://mindearth.github.io/terrazarr/demo/) serves the WSF-3D Italy pyramid from a public bucket through TiTiler.
 
+## WSF dataset
+
+The WSF pyramid produced with terrazarr is published by MindEarth on Source Cooperative:
+<https://source.coop/mindearth/wsf>.
+
+Metrics of the conversion that produced it:
+
+**Layout**
+
+| Parameter | Value |
+|---|---|
+| Chunk shape | 512 × 512 px |
+| Shard shape | 8192 × 8192 px (256 chunks) |
+| Native-level shards | 92,120 |
+| Compression | Blosc with Zstandard |
+| Projection | EPSG:4326 |
+
+**Profiling**
+
+| Parameter | Value |
+|---|---|
+| Runtime levels 0–1 | 2 h 39 m |
+| Runtime levels 2–12 | 31 m |
+| Runtime total | 3 h 10 m |
+| Peak RSS | 5.1 GB |
+| Resources | 8 workers × 4 GB |
+
 ## Authors and contributors
 
 - [Francesco Asaro](mailto:francesco.asaro@mindearth.ch), [MindEarth](https://mindearth.ai/)
