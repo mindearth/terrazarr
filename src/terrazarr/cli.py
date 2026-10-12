@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
         "(default 32, even): the graph in the main process is bounded by the window, about "
         "40 KB per block task, instead of growing with the raster",
     )
+    parser.add_argument(
+        "--resume", action="store_true", default=False,
+        help="Check the completion marker of an existing level 0, skip it when complete and write "
+        "only the windows an interrupted run left out; a level 0 without a marker is rewritten. "
+        "Without --resume, a valid level 0 is used as it is and an absent or invalid one is "
+        "written from scratch",
+    )
     return parser
 
 
@@ -128,6 +135,7 @@ def main(argv: list[str] | None = None) -> None:
             min_dimension=args.chunk_size,
             compressor=make_compressor(args.compressor, args.clevel),
             window_shards=args.window_shards,
+            resume=args.resume,
             s3_profile=args.s3_profile,
         )
     finally:

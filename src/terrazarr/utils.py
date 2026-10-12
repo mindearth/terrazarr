@@ -258,7 +258,7 @@ def validate_existing_band_data(
     """
     Validate that a specific band exists in the dataset and matches the reference.
 
-    Checks what the writer guarantees: presence, shape, dtype, the dims attribute,
+    Checks what the writer guarantees: presence, shape, dtype, the dimension names,
     the CRS, and that one inner chunk is readable. Pixel values are not judged:
     a NaN at the sampled position is legitimate data.
 
@@ -283,7 +283,9 @@ def validate_existing_band_data(
         is_data_var = var_name in reference_ds.data_vars and not is_grid_mapping_variable(
             reference_ds, var_name
         )
-        if is_data_var and "_ARRAY_DIMENSIONS" not in existing_group[var_name].attrs:
+        # zarr v3 stores the dimension names natively; the legacy "_ARRAY_DIMENSIONS"
+        # attribute is not required, a store written by another tool may not have it.
+        if is_data_var and existing_group[var_name].dims != reference_ds[var_name].dims:
             return False
 
         if existing_group.rio.crs != reference_ds.rio.crs:

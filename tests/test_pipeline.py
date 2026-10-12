@@ -202,7 +202,7 @@ def test_window_failure_is_retried_then_resumed(tmp_path, dask_client, monkeypat
 
     monkeypatch.setattr(geozarr, "_write_and_reduce", orig)
     _run(inp, out, shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0,
-         max_retries=1, window_shards=2)
+         max_retries=1, window_shards=2, resume=True)
     assert "resuming from" in capsys.readouterr().out
     assert geozarr._read_window_marker(store, "0")[1], "completion marker missing after the resume"
     assert {f: os.stat(f).st_mtime_ns for f in files} == before, "windows already done were rewritten"
@@ -211,6 +211,87 @@ def test_window_failure_is_retried_then_resumed(tmp_path, dask_client, monkeypat
     np.testing.assert_array_equal(l0, src)
     for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
         np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref)
+
+
+def _strip_marker(out):
+    g = zarr.open_group(get_zarr_store(out), path="0", mode="r+", use_consolidated=False)
+    for k in (geozarr.WINDOWS_DONE_ATTR, geozarr.LEVEL_COMPLETE_ATTR):
+        g.attrs.pop(k, None)
+
+
+def _level0_shards(out):
+    root = os.path.join(out, "0", "data", "c")
+    return {os.path.join(r, f): os.stat(os.path.join(r, f)).st_mtime_ns
+            for r, _, fs in os.walk(root) for f in fs if f.isdigit()}
+
+
+KW = dict(shard_size=64, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0, window_shards=2)
+
+
+def test_existing_level_0_is_used_without_resume(tmp_path, dask_client, capsys):
+    """Without resume a valid level 0 is used as it is, marker or not; nothing is rewritten."""
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, **KW)
+    _strip_marker(out)
+    before = _level0_shards(out)
+    assert before
+    time.sleep(0.05)
+    capsys.readouterr()
+    _run(inp, out, **KW)
+    assert "Level 0 already exists" in capsys.readouterr().out
+    assert _level0_shards(out) == before, "level 0 was rewritten"
+    src = xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values
+    np.testing.assert_array_equal(_open_level(out, 0)["data"].values, src)
+
+
+def test_level_0_without_array_dimensions_attribute_is_valid(tmp_path, dask_client, capsys):
+    """A level 0 written by another tool has dimension_names but no legacy _ARRAY_DIMENSIONS
+    attribute; it validates and is used as it is, nothing is deleted."""
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, **KW)
+    arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r+")
+    attrs = dict(arr.attrs)
+    attrs.pop("_ARRAY_DIMENSIONS", None)
+    arr.attrs.clear()
+    arr.attrs.update(attrs)
+    assert "_ARRAY_DIMENSIONS" not in zarr.open_array(get_zarr_store(out), path="0/data", mode="r").attrs
+    _strip_marker(out)
+    before = _level0_shards(out)
+    time.sleep(0.05)
+    capsys.readouterr()
+    _run(inp, out, **KW)
+    log = capsys.readouterr().out
+    assert "Level 0 already exists" in log and "Removing invalid" not in log
+    assert _level0_shards(out) == before
+
+
+def test_resume_without_marker_rewrites_level_0(tmp_path, dask_client, capsys):
+    """With resume a level 0 that has no marker cannot be checked and is written again."""
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, **KW)
+    _strip_marker(out)
+    before = _level0_shards(out)
+    time.sleep(0.05)
+    capsys.readouterr()
+    _run(inp, out, resume=True, **KW)
+    assert "Level 0 already exists" not in capsys.readouterr().out
+    assert _level0_shards(out) != before, "level 0 was not rewritten"
+    assert geozarr._read_window_marker(get_zarr_store(out), "0")[1]
+
+
+def test_resume_skips_a_complete_level_0(tmp_path, dask_client, capsys):
+    inp = make_input(tmp_path / "in.zarr", shape=(512, 512), input_chunk=128)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, **KW)
+    before = _level0_shards(out)
+    time.sleep(0.05)
+    capsys.readouterr()
+    _run(inp, out, resume=True, **KW)
+    assert "Level 0 already exists" in capsys.readouterr().out
+    assert _level0_shards(out) == before
 
 
 @pytest.mark.parametrize("window_shards", [2, 4, 64])
