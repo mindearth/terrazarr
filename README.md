@@ -110,8 +110,11 @@ well, with the writers' characteristics and the correctness checks: [benchmarks]
 
 ## WSF dataset
 
-The WSF pyramid produced with terrazarr is published by MindEarth on Source Cooperative:
-<https://source.coop/mindearth/wsf>.
+The World Settlement Footprint (WSF) is a global map of human settlements at 10 m resolution. It shows
+where built-up areas are and, for each settlement, the year it first appeared. It has been updated every six months since 2016, and population is
+planned as a further layer. 
+
+The WSF geozarr produced with terrazarr is published by MindEarth on [Source Cooperative](https://source.coop/mindearth/wsf) and powers the [WSF platform](https://www.worldsettlementfootprint.com/).
 
 Metrics of the conversion that produced it:
 
