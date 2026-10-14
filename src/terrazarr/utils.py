@@ -24,6 +24,8 @@ def result_dtype(dtype: Any, method: str) -> np.dtype:
         return np.dtype("float64")
     if method in {"min", "max", "nearest"}:
         return dtype
+    if method == "sum":
+        return np.dtype("int64") if is_integer else np.dtype("float64") if dtype.itemsize > 4 else dtype
     if method == "median":
         if (is_integer and dtype.itemsize <= 2) or dtype == np.float32:
             return np.dtype("float32")
@@ -52,7 +54,10 @@ def reduce_block(
     is invalid too. An output pixel whose valid fraction is below ``VALID_FRACTION`` is
     nodata. A block that holds no valid pixel at all is answered without a reduction,
     which is what makes sparse rasters cheap. ``mean`` is computed in float64, ``min`` and
-    ``max`` in the source dtype, ``median`` in float32 for integers up to 16 bits and
+    ``max`` in the source dtype, ``sum`` adds the valid pixels in int64 (integers) or float64
+    (floats) and is nodata only where no pixel is valid, since a partly valid block still holds
+    its part of the total (the ``VALID_FRACTION`` rule does not apply); an integer ``out_dtype``
+    saturates instead of wrapping. ``median`` in float32 for integers up to 16 bits and
     float64 otherwise; ``nearest`` takes the pixel at the block centre. The result is
     cast to ``out_dtype`` when given, rounding to nearest for integer targets.
     """
@@ -116,6 +121,18 @@ def reduce_block(
         else:
             total = np.where(valid, blocks, 0).sum(axis=axes, dtype=np.float64)
             result = total / np.maximum(cnt, 1)
+    elif method == "sum":
+        acc = np.int64 if is_integer else np.float64
+        if valid is None or (has_numeric_nodata and nodata_value == 0 and (isnan is None or not isnan.any())):
+            # nothing to mask, or nodata 0 adds nothing to the sum: no masked copy of the block
+            result = blocks.sum(axis=axes, dtype=acc)
+        else:
+            result = np.where(valid, blocks, 0).sum(axis=axes, dtype=acc)
+        if cnt is not None:
+            keep = cnt > 0
+        if np.issubdtype(out_dt, np.integer):
+            info = np.iinfo(out_dt)
+            result = np.clip(result, info.min, info.max)
     elif method in {"min", "max"}:
         if is_integer:
             if valid is None:
@@ -187,7 +204,7 @@ def downsample_2d_array(
         raise ValueError("target_height must be between 1 and source height")
     if not 0 < target_width <= source_width:
         raise ValueError("target_width must be between 1 and source width")
-    if method not in {"mean", "min", "max", "median", "nearest"}:
+    if method not in {"mean", "sum", "min", "max", "median", "nearest"}:
         raise ValueError(f"Unknown method: {method}")
     if not isinstance(source_data, da.Array):
         source_data = da.from_array(source_data, chunks="auto")

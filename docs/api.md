@@ -26,7 +26,7 @@ terrazarr --input IN --output OUT [options]
 | `--chunk-size` | 256 | zarr chunk on y/x, the tile a client fetches |
 | `--shard-size` | 4096 | zarr shard on y/x with `--sharding`, and the dask block in every case; a multiple of the chunk size |
 | `--sharding` | off | write sharded arrays, one object per shard |
-| `--method` | `mean` | `mean`, `min`, `max`, `median` or `nearest` |
+| `--method` | `mean` | `mean`, `sum`, `min`, `max`, `median` or `nearest`; `sum` adds the valid pixels, keeps the source dtype (integers saturate) and is nodata only where no pixel is valid |
 | `--nodata` | none | numeric nodata, excluded from the reduction; NaN is always nodata |
 | `--compressor`, `--clevel` | `zstd`, 3 | Blosc codec and level for every level's data; `none` for uncompressed |
 | `--workers`, `--threads-per-worker`, `--memory-limit` | 8, 1, `auto` | the dask cluster; several single-threaded processes beat one multi-threaded one, since zarr assembles chunks on one event loop per process |

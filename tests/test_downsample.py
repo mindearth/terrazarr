@@ -99,3 +99,42 @@ def test_odd_chunks_are_aligned_to_the_factor():
     a = np.arange(30 * 31, dtype="float64").reshape(30, 31)
     out = utils.downsample_2d_array(da.from_array(a, chunks=(7, 9)), 15, 15, method="mean").compute()
     np.testing.assert_allclose(out, a[:30, :30].reshape(15, 2, 15, 2).mean(axis=(1, 3)))
+
+
+@pytest.mark.parametrize("nodata", [-1, 0, -9999.0])
+def test_sum_excludes_nodata_and_nan(nodata):
+    a = np.array([[1, nodata, 2, 3], [4, 5, np.nan, 6]], dtype="float32")
+    out = utils.reduce_block(a, 2, 2, "sum", nodata_value=nodata)
+    np.testing.assert_array_equal(out, [[10.0, 11.0]])
+    assert out.dtype == np.float32, "floats keep their dtype, accumulated in float64"
+
+
+def test_sum_partly_valid_block_keeps_its_part_and_empty_block_is_nodata():
+    # one valid pixel of four: the mean rule would blank it, a sum must keep it
+    a = np.full((4, 2), -1.0, dtype="float32")
+    a[0, 0] = 7.0
+    out = utils.reduce_block(a, 2, 2, "sum", nodata_value=-1)
+    np.testing.assert_array_equal(out, [[7.0], [-1.0]])
+    # NaN-only block without numeric nodata stays NaN, not 0
+    assert np.isnan(utils.reduce_block(np.full((2, 2), np.nan, "float32"), 2, 2, "sum")).all()
+
+
+def test_sum_integers_do_not_wrap_and_saturate_on_cast():
+    a = np.full((2, 2), 200, dtype="uint8")
+    assert utils.reduce_block(a, 2, 2, "sum")[0, 0] == 800
+    assert utils.downsample_2d_array(da.from_array(a, chunks=(2, 2)), 1, 1, method="sum").dtype == np.int64
+    assert utils.reduce_block(a, 2, 2, "sum", out_dtype="uint8")[0, 0] == 255
+    b = np.array([[255, 1], [3, 255]], dtype="uint8")
+    assert utils.reduce_block(b, 2, 2, "sum", nodata_value=255)[0, 0] == 4
+
+
+def test_sum_conserves_the_total_across_levels():
+    rng = np.random.default_rng(1)
+    a = rng.random((64, 64)).astype("float32")
+    a[rng.random((64, 64)) < 0.4] = -1
+    lvl = da.from_array(a, chunks=(32, 32))
+    total = a[a != -1].sum(dtype="float64")
+    for _ in range(3):
+        lvl = utils.downsample_2d_array(lvl, lvl.shape[0] // 2, lvl.shape[1] // 2, nodata_value=-1, method="sum", out_dtype="float32")
+        got = lvl.compute()
+        np.testing.assert_allclose(got[got != -1].sum(dtype="float64"), total, rtol=1e-5)

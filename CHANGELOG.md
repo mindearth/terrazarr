@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `method="sum"` / `--method sum`: each output pixel is the sum of the valid source pixels (NaN and the numeric
+  `nodata` are excluded) and is nodata only where none is valid, so totals such as population
+  are conserved from level to level. The result keeps the source dtype; integers saturate.
+
 ### Changed
 
 - Level-0 resume is now opt-in: `resume=True` / `--resume` checks the completion marker, skips a
