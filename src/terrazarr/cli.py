@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         "a multiple of --chunk-size",
     )
     parser.add_argument(
-        "--method", default="mean", choices=["mean", "min", "max", "median", "nearest"],
+        "--method", default="mean", choices=["mean", "sum", "min", "max", "median", "nearest"],
         help="Resampling method for pyramid levels",
     )
     parser.add_argument("--sharding", action="store_true", default=False, help="Enable zarr sharding")

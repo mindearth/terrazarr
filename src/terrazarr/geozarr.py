@@ -503,11 +503,11 @@ def to_geozarr(
         dask block on y/x in every case; a multiple of ``chunk_size``.
     sharding : bool, default True
         Write sharded arrays (one object per shard) instead of one object per chunk.
-    method : {"mean", "min", "max", "median", "nearest"}, default "mean"
+    method : {"mean", "sum", "min", "max", "median", "nearest"}, default "mean"
         Reduction from one level to the next.
     nodata : float, optional
         Numeric nodata value, excluded from the reduction; NaN is always nodata. A block with
-        less than 30 % valid pixels becomes nodata.
+        less than 30 % valid pixels becomes nodata (``sum``: only a block with no valid pixel).
     min_dimension : int, optional
         Stop adding levels when both dimensions are below this; default ``chunk_size``.
     compressor : zarr codec, optional
