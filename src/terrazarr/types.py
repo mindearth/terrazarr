@@ -57,7 +57,6 @@ class OverviewLevelJSON(TypedDict):
     width: int
     height: int
     scale_factor: int
-    chunks: tuple[tuple[int, ...], ...] | list[tuple[int, ...]]
 
 
 class TileMatrixJSON(TypedDict):

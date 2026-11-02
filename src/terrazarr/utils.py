@@ -337,20 +337,3 @@ def all_chunks_written(store, path: str) -> bool:
 
     z = zarr.open_array(store, path=path, mode="r")
     return z.nchunks_initialized == z.nchunks
-
-
-def compute_overview_gcps(
-    ds_gcp: xr.Dataset, scale_factor: float, width: int, height: int
-) -> xr.Dataset:
-    """Compute new GCPs for a given overview from the original GCPs."""
-    ds_gcp_overview = (
-        ds_gcp.assign_coords(
-            line=np.round(ds_gcp.line / scale_factor).astype(np.int64),
-            pixel=np.round(ds_gcp.pixel / scale_factor).astype(np.int64),
-        )
-        .pipe(lambda ds: ds.groupby(["line", "pixel"]))
-        .mean()
-        .rename_dims(line="azimuth_time", pixel="ground_range")
-    )
-
-    return ds_gcp_overview

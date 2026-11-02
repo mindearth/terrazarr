@@ -12,10 +12,14 @@ from terrazarr import geozarr, utils
 from terrazarr.store import get_zarr_store, set_spatial_info
 
 
+def _yx(size):
+    return size["y"] if isinstance(size, dict) else size
+
+
 def _run(inp, out, **kw):
-    ds = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": kw["shard_size"], "x": kw["shard_size"]}, consolidated=False)
+    ds = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": _yx(kw["shard_size"]), "x": _yx(kw["shard_size"])}, consolidated=False)
     ds = set_spatial_info(ds)
-    params = dict(min_dimension=kw.get("chunk_size", 64), chunk_size=64, max_retries=1)
+    params = dict(min_dimension=_yx(kw.get("chunk_size", 64)), chunk_size=64, max_retries=1)
     params.update(kw)
     params["sharding"] = params.pop("enable_sharding", True)
     if "nodata_value" in params:
@@ -28,7 +32,7 @@ def _open_level(out, level):
 
 
 def test_precondition_shard_size_multiple_of_chunk_size(tmp_path):
-    with pytest.raises(ValueError, match="multiple of chunk_size"):
+    with pytest.raises(ValueError, match="multiple of its chunk"):
         geozarr.to_geozarr(xr.Dataset(), str(tmp_path / "o.zarr"), shard_size=300, chunk_size=256)
 
 
@@ -357,10 +361,165 @@ def test_band_last_source_is_one_task_per_block(tmp_path, dask_client):
     src = xr.open_dataset(get_zarr_store(inp), engine="zarr", chunks={"y": 128, "x": 128}, consolidated=False)["data"].transpose("band", "y", "x")
     assert geozarr._dask_chunks_for(enc, src.dims, 128, src.data.chunks) == {"band": 3, "y": 128, "x": 128}
     out = str(tmp_path / "out.zarr")
-    _run(inp, out, shard_size=128, chunk_size=64, enable_sharding=True, method="mean", nodata_value=0)
+    _run(inp, out, shard_size=128, chunk_size={"y": 64, "x": 64, "band": 1}, enable_sharding=True, method="mean", nodata_value=0)
     arr = zarr.open_array(get_zarr_store(out), path="0/data", mode="r")
     assert arr.shape == (3, H, W) and arr.shards == (1, 128, 128)
     ref0 = np.moveaxis(data, -1, 0)
     np.testing.assert_array_equal(arr[:], ref0)
     l1 = _open_level(out, 1)["data"].values
     np.testing.assert_array_equal(l1, utils.reduce_block(ref0, 2, 2, "mean", nodata_value=0, out_dtype="uint8"))
+
+
+def test_sizes_by_dim_are_validated_and_resolved():
+    ds = xr.Dataset({"v": (("band", "y", "x"), np.zeros((4, 8, 8), dtype="uint8"))})
+    with pytest.raises(ValueError, match="y and x together and equal"):
+        geozarr.resolve_layout(ds, {"y": 512, "x": 256})
+    with pytest.raises(ValueError, match="y and x together and equal"):
+        geozarr.resolve_layout(ds, {"y": 512})
+    with pytest.raises(ValueError, match="positive int"):
+        geozarr.resolve_layout(ds, {"band": "4"})
+    with pytest.raises(ValueError, match="positive int"):
+        geozarr.resolve_layout(ds, 0)
+    with pytest.raises(ValueError, match="multiple of its chunk"):
+        geozarr.resolve_layout(ds, {"band": 4}, {"band": 6})
+    with pytest.raises(ValueError, match="multiple of its chunk"):
+        geozarr.resolve_layout(ds, 512, 1000)
+    with pytest.raises(ValueError, match="does not have"):
+        geozarr.resolve_layout(ds, {"time": 2})
+    assert geozarr.resolve_layout(ds, 512, 8192) == ({"y": 512, "x": 512}, {"y": 8192, "x": 8192})
+    assert geozarr.resolve_layout(ds, {"y": 512, "x": 512, "band": 4}, {"y": 8192, "x": 8192}) == (
+        {"y": 512, "x": 512, "band": 4}, {"y": 8192, "x": 8192, "band": 4}), "a lead shard left out is the chunk"
+    assert geozarr.resolve_layout(ds, {"band": 2}, {"band": 8}) == (
+        {"y": 256, "x": 256, "band": 2}, {"y": 4096, "x": 4096, "band": 8}), "y/x left out: the defaults"
+    assert geozarr.resolve_layout(ds, None, {"band": 3})[0]["band"] == 1, "a lead chunk left out is 1"
+
+
+def test_unknown_dim_is_rejected(tmp_path, dask_client):
+    inp = make_input(tmp_path / "in3.zarr", shape=(3, 128, 128), input_chunk=64)
+    with pytest.raises(ValueError, match="does not have"):
+        _run(inp, str(tmp_path / "o.zarr"), shard_size=128, chunk_size={"y": 64, "x": 64, "band": 3})
+
+
+def test_encoding_chunks_and_shards_on_a_lead_dim():
+    ds = xr.Dataset({"v": (("band", "y", "x"), np.zeros((6, 100, 3000), dtype="uint8"), {"grid_mapping": "spatial_ref"})})
+    ds = ds.assign_coords(spatial_ref=xr.DataArray(0))
+    sizes = {"band": (2, 4)}
+    enc = geozarr._create_geozarr_encoding(ds, None, 256, 1024, True, sizes)
+    assert enc["v"]["chunks"] == (2, 100, 256)
+    assert enc["v"]["shards"] == (4, 100, 1024)
+    big = geozarr._create_geozarr_encoding(ds, None, 256, 1024, True, {"band": (4, 4096)})
+    assert big["v"]["chunks"] == (4, 100, 256)
+    assert big["v"]["shards"] == (4, 100, 1024), "shard clipped to a chunk multiple within the dim"
+    assert geozarr._dask_chunks_for(enc["v"], ds["v"].dims, 1024, None, sizes) == {"band": 4, "y": 100, "x": 1024}
+    flat = geozarr._create_geozarr_encoding(ds, None, 256, 1024, False, sizes)
+    assert geozarr._dask_chunks_for(flat["v"], ds["v"].dims, 1024, None, sizes) == {"band": 4, "y": 1024, "x": 1024}
+    # a source block of 6 slices is not a whole number of 4-slice shards: not kept whole
+    assert geozarr._dask_chunks_for(enc["v"], ds["v"].dims, 1024, [(6,), (100,), (3000,)], sizes)["band"] == 4
+
+
+@pytest.mark.parametrize("sharding", [True, False])
+def test_chunks_on_a_lead_dim_levels_equal_reference(tmp_path, dask_client, monkeypatch, sharding):
+    # 6 slices in blocks of 4: the last block is partial; MIN_BLOCKS 1 sends level 2 through the store
+    monkeypatch.setattr(geozarr, "MIN_BLOCKS_FROM_STORE", 1)
+    inp = make_input(tmp_path / "in6.zarr", shape=(6, 512, 512), input_chunk=256)
+    out = str(tmp_path / "out6.zarr")
+    _run(inp, out, shard_size={"y": 128, "x": 128, "t": 4}, chunk_size={"y": 64, "x": 64, "t": 2},
+         enable_sharding=sharding, method="max")
+    for level in (0, 1, 2):
+        arr = zarr.open_array(get_zarr_store(out), path=f"{level}/data", mode="r")
+        assert arr.chunks[0] == 2
+        assert (arr.shards[0] if sharding else 4) == 4
+        assert arr.shape[0] == 6
+    l0 = _open_level(out, 0)["data"].values
+    l1 = _open_level(out, 1)["data"].values
+    l2 = _open_level(out, 2)["data"].values
+    np.testing.assert_array_equal(l1, l0.reshape(6, 256, 2, 256, 2).max(axis=(2, 4)))
+    np.testing.assert_array_equal(l2, l1.reshape(6, 128, 2, 128, 2).max(axis=(2, 4)))
+
+
+def _source(tmp_path, chunks, shards=None, shape=(6, 512, 512), dims=("band", "y", "x"), name="src"):
+    ds = xr.Dataset({"v": (dims, np.zeros(shape, dtype="uint8"))})
+    enc = {"chunks": chunks, **({"shards": shards} if shards else {})}
+    path = str(tmp_path / f"{name}.zarr")
+    ds.to_zarr(path, zarr_format=3, consolidated=False, encoding={"v": enc})
+    return xr.open_dataset(path, engine="zarr", chunks={}, consolidated=False)
+
+
+def test_source_layout_is_read_from_the_encoding(tmp_path):
+    src = _source(tmp_path, (2, 64, 128), (4, 256, 512))
+    assert geozarr._source_layout(xr.DataTree(src)) == (128, 512, {"band": 2}, {"band": 4})
+    src = _source(tmp_path, (2, 64, 64), name="unsharded")
+    assert geozarr._source_layout(xr.DataTree(src)) == (64, None, {"band": 2}, {})
+    src = _source(tmp_path, (64, 128, 2), (256, 512, 4), shape=(512, 512, 6), dims=("y", "x", "band"), name="bandlast")
+    assert geozarr._source_layout(xr.DataTree(src.transpose("band", "y", "x"))) == (128, 512, {"band": 2}, {"band": 4}), \
+        "a transpose after opening keeps the stored order in the encoding"
+    with pytest.raises(ValueError, match="source's chunk"):
+        geozarr.resolve_layout(_source(tmp_path, (3, 64, 64), name="odd"), shard_size={"band": 4})
+    bare = xr.Dataset({"v": (("band", "y", "x"), np.zeros((2, 8, 8)))})
+    assert geozarr._source_layout(xr.DataTree(bare)) == (None, None, {}, {}), "no encoding: nothing"
+
+
+def test_layout_defaults_to_the_source(tmp_path, dask_client):
+    src = set_spatial_info(_source(tmp_path, (2, 64, 64), (4, 128, 128), shape=(6, 512, 512)).assign_coords(
+        y=-np.arange(512) * 10.0 + 5_000_000, x=np.arange(512) * 10.0 + 1_000_000))
+    out = str(tmp_path / "o.zarr")
+    geozarr.to_geozarr(src, out, max_retries=1, method="max")
+    arr = zarr.open_array(get_zarr_store(out), path="0/v", mode="r")
+    assert arr.chunks == (2, 64, 64) and arr.shards == (4, 128, 128)
+    # a chunk given by the caller replaces the source's, shard and all, for that dim only
+    out = str(tmp_path / "o2.zarr")
+    geozarr.to_geozarr(src, out, max_retries=1, method="max", chunk_size={"y": 32, "x": 32, "band": 3})
+    arr = zarr.open_array(get_zarr_store(out), path="0/v", mode="r")
+    assert arr.chunks == (3, 32, 32) and arr.shards == (3, 128, 128)
+
+
+def test_cli_without_sizes_keeps_the_source_layout_and_reads_by_shard(tmp_path, monkeypatch):
+    from terrazarr import cli
+
+    _source(tmp_path, (2, 64, 64), (4, 128, 128), name="clisrc")
+    path = str(tmp_path / "clisrc.zarr")
+    seen = {}
+    real = geozarr.to_geozarr
+
+    def spy(ds, out, **kw):
+        seen["chunks"] = {d: c[0] for d, c in ds.chunksizes.items()}
+        seen.update(kw)
+        return real(ds.rio.write_crs("EPSG:3857").assign_coords(
+            y=-np.arange(512) * 10.0 + 5_000_000, x=np.arange(512) * 10.0 + 1_000_000), out, **kw)
+
+    monkeypatch.setattr(cli, "to_geozarr", spy)
+    monkeypatch.setattr(cli, "get_dask_client", lambda **_: type("C", (), {"dashboard_link": "", "close": lambda self: None})())
+    out = str(tmp_path / "cli.zarr")
+    cli.main(["--input", path, "--output", out, "--sharding", "--method", "max"])
+    assert seen["chunks"] == {"band": 4, "y": 128, "x": 128}, "input read in blocks of the output shard"
+    assert (seen["chunk_size"], seen["shard_size"]) == ({"y": 64, "x": 64, "band": 2}, {"y": 128, "x": 128, "band": 4})
+    arr = zarr.open_array(get_zarr_store(out), path="0/v", mode="r")
+    assert arr.chunks == (2, 64, 64) and arr.shards == (4, 128, 128)
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_a_level_with_another_layout_is_rewritten_not_reused(tmp_path, dask_client, resume):
+    inp = make_input(tmp_path / "in4.zarr", shape=(4, 256, 256), input_chunk=128)
+    out = str(tmp_path / "out4.zarr")
+    _run(inp, out, shard_size=128, chunk_size={"y": 64, "x": 64, "t": 1}, method="max")
+    _run(inp, out, shard_size={"y": 128, "x": 128, "t": 4}, chunk_size={"y": 64, "x": 64, "t": 2}, method="max", resume=resume)
+    for level in (0, 1, 2):
+        arr = zarr.open_array(get_zarr_store(out), path=f"{level}/data", mode="r")
+        assert arr.chunks[0] == 2 and arr.shards[0] == 4, f"level {level} has the new layout"
+    l0 = _open_level(out, 0)["data"].values
+    np.testing.assert_array_equal(_open_level(out, 1)["data"].values, l0.reshape(4, 128, 2, 128, 2).max(axis=(2, 4)))
+
+
+def test_tile_matrix_set_tile_is_the_chunk(tmp_path, dask_client):
+    inp = make_input(tmp_path / "tms.zarr", shape=(1, 512, 384), input_chunk=128)
+    out = str(tmp_path / "tms_out.zarr")
+    _run(inp, out, shard_size=128, chunk_size=64, method="mean")
+    attrs = zarr.open_group(get_zarr_store(out), mode="r").attrs
+    assert attrs["multiscales"]["tile_matrix_set"] == attrs["tile_matrix_set"]
+    limits = attrs["tile_matrix_limits"]
+    for tm in attrs["tile_matrix_set"]["tileMatrices"]:
+        assert (tm["tileWidth"], tm["tileHeight"]) == (64, 64), f"level {tm['id']}: the tile is the chunk"
+        lim = limits[tm["id"]]
+        assert (tm["matrixWidth"], tm["matrixHeight"]) == (lim["maxTileCol"] + 1, lim["maxTileRow"] + 1), \
+            f"level {tm['id']}: the matrix agrees with its limits"
+    assert attrs["tile_matrix_set"]["tileMatrices"][0]["matrixWidth"] == 6, "384 px in 64 px tiles"

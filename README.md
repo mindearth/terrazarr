@@ -22,7 +22,7 @@ and output shape, so it's a drop-in for anyone with an xarray object and a CRS w
 the scene-sized assumption. Reach for it if you need:
 
 - **Low, flat memory use.** Peak memory doesn't grow with the raster: task memory is always one
-  shard, and the main process' graph is bounded by a window rather than by the whole raster. A
+  shard (y/x shard times the shard on any band/time dim), and the main process' graph is bounded by a window rather than by the whole raster. A
   raster with a million-plus level-0 shard tasks still peaks under a gigabyte, where a writer
   that loads a whole level into memory first needs tens of gigabytes before it reads a pixel.
 - **Real scalability.** The same lazy, windowed, shard-aligned execution applies unchanged from
@@ -74,6 +74,33 @@ terrazarr --input in.zarr --output out.zarr \
   --workers 8 --threads-per-worker 1 --memory-limit 4GB \
   --compressor zstd --clevel 3
 ```
+
+### Chunks and shards
+
+`chunk_size` and `shard_size` set the zarr chunk and shard, in elements: an int sets `y` and `x`,
+a dict sets any dim (bands, time) by name, with `y` equal to `x`. A dim left out follows the
+source's zarr chunk and shard, and falls back to 256 and 4096 on `y`/`x` and to 1 on another dim
+when the source has none (a GeoTIFF, an in-memory array); a shard left out on another dim is its
+chunk. An RGBA image with all four bands in every chunk, in `(4, 512, 512)` chunks inside
+`(4, 8192, 8192)` shards:
+
+```python
+rgba = xr.open_dataset("rgba.zarr", engine="zarr", chunks={})          # rgba: (band, y, x)
+to_geozarr(rgba, "out.zarr",
+           chunk_size={"y": 512, "x": 512, "band": 4},
+           shard_size={"y": 8192, "x": 8192, "band": 4})
+```
+
+```bash
+terrazarr --input rgba.zarr --output out.zarr --sharding \
+  --chunk-size y=512,x=512,band=4 --shard-size y=8192,x=8192,band=4
+```
+
+A shard is a multiple of its chunk on every dim, and one shard is one task, so task memory is
+the product of the shard on every dim: `4 × 8192² × 1` byte is 256 MB of uint8 per task, before
+the reduction. Every variable of a group shares the layout; for variables that need different
+chunks, write each to its own group (one `to_geozarr` call per group into the same store), not
+two calls into one group, which rewrite each other's overview levels.
 
 Local paths and `s3://` URLs work for both input and output. The [API](https://mindearth.github.io/terrazarr/api/) page lists every
 option, the output layout and the conventions the store follows; [examples/](examples/)
