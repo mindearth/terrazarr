@@ -6,9 +6,35 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `chunk_size` and `shard_size` (`--chunk-size`, `--shard-size`) also take a size per dim, e.g.
+  `chunk_size={"y": 512, "x": 512, "band": 4}` (`--chunk-size y=512,x=512,band=4`) writes
+  `(4, 512, 512)` chunks; the non-spatial dims were fixed at 1. An int still sets y and x, and y
+  must equal x. A shard is a multiple of its chunk and is the dask block on that dim, so task
+  memory is the product of the shard on every dim.
+- A dim left out of `chunk_size` / `shard_size` has the chunk and shard of the source (the zarr
+  encoding of its first data variable), and 256 and 4096 on y/x and 1 on another dim when the
+  source has none. A source with a long chunk on a non-spatial dim now gives a long shard there,
+  which raises task memory.
+
+### Changed
+
+- A level already on the store whose chunks or shards differ from the layout being written is
+  rewritten instead of reused or resumed (resuming it could have two tasks rewrite one shard).
+
+### Fixed
+
+- The tile matrix set declared 256-pixel tiles whatever `chunk_size` was, which disagreed with the
+  chunks and with `tile_matrix_limits`; its tile is now the y/x chunk.
+
+## [0.1.4] - 2026-10-14
+
+### Added
+
 - `method="sum"` / `--method sum`: each output pixel is the sum of the valid source pixels (NaN and the numeric
   `nodata` are excluded) and is nodata only where none is valid, so totals such as population
   are conserved from level to level. The result keeps the source dtype; integers saturate.
+
+## [0.1.3] - 2026-10-08
 
 ### Changed
 
@@ -42,4 +68,7 @@ Initial release.
 - Documentation site with API reference, benchmarks against eopf-geozarr, topozarr and GDAL, and
   a live demo serving a GeoZarr pyramid through TiTiler.
 
+[Unreleased]: https://github.com/mindearth/terrazarr/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/mindearth/terrazarr/releases/tag/v0.1.4
+[0.1.3]: https://github.com/mindearth/terrazarr/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mindearth/terrazarr/releases/tag/v0.1.2

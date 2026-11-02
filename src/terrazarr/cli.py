@@ -10,7 +10,7 @@ import os
 
 import xarray as xr
 
-from terrazarr.geozarr import make_compressor, to_geozarr
+from terrazarr.geozarr import make_compressor, resolve_layout, to_geozarr
 from terrazarr.store import get_zarr_store, set_spatial_info
 
 log = logging.getLogger(__name__)
@@ -58,15 +58,33 @@ def get_dask_client(
     )
 
 
+def _sizes(text: str) -> int | dict[str, int]:
+    """``512`` (y and x) or ``y=512,x=512,band=4``."""
+    if text.isdigit():
+        return int(text)
+    sizes = {}
+    for item in text.split(","):
+        name, sep, value = item.strip().partition("=")
+        if not (name and sep and value.isdigit()):
+            raise argparse.ArgumentTypeError(f"expected N or DIM=N,DIM=N,..., got {text!r}")
+        sizes[name] = int(value)
+    return sizes
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create GeoZarr dataset from Zarr input.")
     parser.add_argument("--input", required=True, help="Input Zarr path (local or s3://...)")
     parser.add_argument("--output", required=True, help="Output GeoZarr path (local or s3://...)")
-    parser.add_argument("--chunk-size", type=int, default=256, help="Zarr chunk size on y/x")
     parser.add_argument(
-        "--shard-size", type=int, default=4096,
-        help="Zarr shard size on y/x with --sharding, and the dask block size on y/x in every case; "
-        "a multiple of --chunk-size",
+        "--chunk-size", type=_sizes, default=None, metavar="N|DIM=N,...",
+        help="Zarr chunk: N for y and x, or per dim, e.g. y=512,x=512,band=4 (y equal to x). "
+        "A dim left out has the input's chunk, else 256 on y/x and 1 on another dim",
+    )
+    parser.add_argument(
+        "--shard-size", type=_sizes, default=None, metavar="N|DIM=N,...",
+        help="Zarr shard with --sharding, and the dask block in every case, keyed like --chunk-size "
+        "and a multiple of the chunk on each dim. A dim left out has the input's shard if it fits, "
+        "else 4096 on y/x and the chunk on another dim",
     )
     parser.add_argument(
         "--method", default="mean", choices=["mean", "sum", "min", "max", "median", "nearest"],
@@ -116,23 +134,24 @@ def main(argv: list[str] | None = None) -> None:
     )
     log.info("Dask dashboard: %s", client.dashboard_link)
 
-    ds = xr.open_dataset(
-        get_zarr_store(args.input, args.s3_profile),
-        engine="zarr",
-        chunks={"y": args.shard_size, "x": args.shard_size},
+    store = get_zarr_store(args.input, args.s3_profile)
+    # The layout first, from the input's encoding without dask, so the input is read in blocks
+    # of the output shard instead of its own (possibly much smaller) chunks.
+    chunks, shards = resolve_layout(
+        xr.open_dataset(store, engine="zarr", chunks=None), args.chunk_size, args.shard_size
     )
+    ds = xr.open_dataset(store, engine="zarr", chunks=shards)
     ds = set_spatial_info(ds)
 
     try:
         to_geozarr(
             ds,
             args.output,
-            chunk_size=args.chunk_size,
-            shard_size=args.shard_size,
+            chunk_size=chunks,
+            shard_size=shards,
             sharding=args.sharding,
             method=args.method,
             nodata=args.nodata,
-            min_dimension=args.chunk_size,
             compressor=make_compressor(args.compressor, args.clevel),
             window_shards=args.window_shards,
             resume=args.resume,
