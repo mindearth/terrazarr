@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Require `aiohttp>=3.14.4` (pulled in by `s3fs`), which fixes the aiohttp advisories up to 3.14.3
+  (request smuggling, unbounded memory and file-descriptor use, missing header timeout, cookie scope).
+
 ## [0.2.0] - 2026-11-02
 
 ### Added

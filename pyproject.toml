@@ -29,6 +29,8 @@ dependencies = [
     "fsspec>=2024.1",
     "s3fs>=2024.1",
     "obstore>=0.5",
+    # via s3fs -> aiobotocore; floor at the release that fixes GHSA advisories up to 3.14.3
+    "aiohttp>=3.14.4",
 ]
 
 [project.urls]
