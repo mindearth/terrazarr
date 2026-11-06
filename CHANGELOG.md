@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Every overview level is written in windows of `window_shards`² shards, like level 0: one dask
+  compute per window, so the graph in the main process is bounded by the window on every level
+  (0.5 MB per window of 32² shards, whatever the size of the level) instead of growing with it.
+  Each level records its windows in the same marker attributes as level 0; with `--resume` an
+  interrupted overview level is finished from its windows, without it is rewritten. An overview
+  level left incomplete is no longer taken as complete because its arrays exist.
+- The arrays of every level are created from a one-block placeholder instead of the lazy level,
+  so creating them no longer costs a store task per shard (92 s and 530 MB of main-process
+  memory for 262 144 shards, now 0.15 s).
+
 ### Fixed
 
 - `method="median"` with a nodata value no longer goes through `np.nanmedian`, whose masked-array

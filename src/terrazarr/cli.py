@@ -110,16 +110,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--memory-limit", default="auto", help='Memory limit per worker, e.g. "12GB"')
     parser.add_argument(
         "--window-shards", type=int, default=None,
-        help="Level 0 is written in windows of this many blocks per axis, one dask compute each "
-        "(default 32, even): the graph in the main process is bounded by the window, about "
-        "40 KB per block task, instead of growing with the raster",
+        help="Every level is written in windows of this many blocks per axis, one dask compute "
+        "each (default 32, even): the graph in the main process is bounded by the window, about "
+        "40 KB per level-0 block task, instead of growing with the raster",
     )
     parser.add_argument(
         "--resume", action="store_true", default=False,
         help="Check the completion marker of an existing level 0, skip it when complete and write "
         "only the windows an interrupted run left out; a level 0 without a marker is rewritten. "
         "Without --resume, a valid level 0 is used as it is and an absent or invalid one is "
-        "written from scratch",
+        "written from scratch. An incomplete overview level is finished from its windows with "
+        "--resume and rewritten without",
     )
     return parser
 
