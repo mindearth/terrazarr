@@ -29,7 +29,7 @@ import numbers
 import os
 import time
 import uuid
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any
 
 import dask
@@ -86,16 +86,17 @@ FUSE_LEVEL_1 = os.environ.get("TERRAZARR_FUSE_LEVEL_1", "1") != "0"
 """Reduce level 1 from the level-0 blocks in the same compute as the level-0 write."""
 
 MIN_BLOCKS_FROM_STORE = int(os.environ.get("TERRAZARR_MIN_BLOCKS_FROM_STORE", "16"))
-# Level 0 (and the fused level 1) is written in windows of this many dask blocks per axis, one
-# dask compute each, so the graph held by the client and scheduler is bounded by the window and
-# not by the raster (about 40 KB per block task). Must be even so that a window of level-0 shards
-# reduces onto whole level-1 shards.
+# Every level is written in windows of this many dask blocks (shards) per axis, one dask compute
+# each, so the graph held by the client and scheduler is bounded by the window and not by the
+# raster (about 40 KB per level-0 block task, 0.4 KB per overview task). Must be even so that a
+# window of level-0 shards reduces onto whole level-1 shards.
 WINDOW_SHARDS = int(os.environ.get("TERRAZARR_WINDOW_SHARDS", "32"))
 # A non-spatial dim (bands, time) of at most this many slices that the source holds in a single
 # block is kept whole in the dask block: one read, one transpose and one task write all slices,
 # instead of a dask rechunk that splits the block slice by slice.
 MAX_LEAD_PER_TASK = int(os.environ.get("TERRAZARR_MAX_LEAD_PER_TASK", "16"))
-# Level-0 group attributes that record the windows written and the completion of the level.
+# Level group attributes that record the windows written and the completion of the level (on
+# every level; the completion attribute keeps the name it had when only level 0 had windows).
 WINDOWS_DONE_ATTR = "terrazarr:windows_done"
 LEVEL_COMPLETE_ATTR = "terrazarr:level0_complete"
 """Below this many output shards, an overview is reduced from the in-memory parent blocks
@@ -498,7 +499,31 @@ def _fused_write_reduce_array(
     return out
 
 
-def _level0_windows(
+def _metadata_only(ds: xr.Dataset) -> xr.Dataset:
+    """
+    ``ds`` with every dask data variable replaced by a lazy array of one block. Written with
+    ``compute=False`` it creates the same arrays and coordinates without the store task per
+    block that xarray builds for the real variables (0.35 ms and 2 KB each: minutes and
+    gigabytes for a level of a million shards). The windows write the chunks.
+    """
+    return ds.assign(
+        {
+            v: ds[v].copy(data=da.zeros(ds[v].shape, dtype=ds[v].dtype, chunks=-1))
+            for v in ds.data_vars
+            if isinstance(ds[v].data, da.Array)
+        }
+    )
+
+
+def _write_blocks(data: da.Array, arr: zarr.Array, offset: Sequence[int]) -> da.Array:
+    """Lazy write of every block of ``data`` into ``arr``, ``data`` starting at ``offset``."""
+    return da.map_blocks(
+        _write_block, data, arr=arr, offset=tuple(offset), dtype=bool,
+        chunks=tuple((1,) * len(c) for c in data.chunks), meta=np.empty((0,) * data.ndim, dtype=bool),
+    )
+
+
+def _block_windows(
     chunks_y: Sequence[int], chunks_x: Sequence[int], window_shards: int
 ) -> list[tuple[tuple[int, int], slice, slice]]:
     """
@@ -549,16 +574,53 @@ def _read_window_marker(store: StoreLike, group_path: str) -> tuple[set[tuple[in
         return set(), False, None
 
 
+def _window_marker(done: set[tuple[int, int]], window_shards: int, complete: bool) -> dict[str, Any]:
+    return {
+        WINDOWS_DONE_ATTR: {"window_shards": window_shards, "windows": sorted(list(w) for w in done)},
+        LEVEL_COMPLETE_ATTR: complete,
+    }
+
+
 def _write_window_marker(
     store: StoreLike, group_path: str, done: set[tuple[int, int]], window_shards: int, complete: bool
 ) -> None:
     g = zarr.open_group(store, path=_group_or_none(group_path), mode="r+", use_consolidated=False)
-    g.attrs.update(
-        {
-            WINDOWS_DONE_ATTR: {"window_shards": window_shards, "windows": sorted(list(w) for w in done)},
-            LEVEL_COMPLETE_ATTR: complete,
-        }
-    )
+    g.attrs.update(_window_marker(done, window_shards, complete))
+
+
+def _compute_windows(
+    store: StoreLike,
+    group_path: str,
+    label: str,
+    windows: Sequence[tuple[tuple[int, int], slice, slice]],
+    done: set[tuple[int, int]],
+    window_shards: int,
+    max_retries: int,
+    window_graph: Callable[[slice, slice], list[Any]],
+) -> None:
+    """
+    Compute the windows not in ``done``, one dask compute of ``window_graph(ys, xs)`` each,
+    retried up to ``max_retries`` times. Each finished window is added to ``done`` and to the
+    marker attributes of the level group, the completion flag with the last one.
+    """
+    todo = [w for w in windows if w[0] not in done]
+    print(f"  Writing {label} in {len(windows)} windows of {window_shards}² blocks ({len(todo)} to do, {len(done)} done)")
+    for n, (key, ys, xs) in enumerate(todo, 1):
+        delayed = window_graph(ys, xs)
+        for attempt in range(max_retries):
+            try:
+                dask.compute(*delayed)
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"    ⚠️  Window {key} attempt {attempt + 1} failed: {e}; retrying")
+                    time.sleep(2)
+                else:
+                    raise RuntimeError(f"window {key} failed after {max_retries} attempts: {e}") from e
+        done.add(key)
+        _write_window_marker(store, group_path, done, window_shards, complete=len(done) == len(windows))
+        if n % 10 == 0 or n == len(todo):
+            print(f"    window {n}/{len(todo)} done")
 
 
 def _overview_arrays_from_store(
@@ -675,14 +737,17 @@ def to_geozarr(
         Codec for every level's data variables, see :func:`make_compressor`; default Blosc
         zstd level 3 with byte shuffle, ``None`` for no compression.
     window_shards : int, optional
-        Level 0 is written in windows of this many blocks per axis, one dask compute each
-        (default 32). Bounds the memory of the process that holds the dask graph.
+        Every level is written in windows of this many blocks (shards) per axis, one dask
+        compute each (default 32, even). Bounds the memory of the process that holds the dask
+        graph, whatever the size of the raster.
     resume : bool, default False
         What to do with a level 0 already on the store. ``False``: use it as it is when it
         is valid, without checking that it is complete, and write it from scratch when it is
         absent or invalid. ``True``: check the completion marker of the level, skip a
         complete level and write only the windows an interrupted run left out; a level
-        without a marker cannot be resumed and is rewritten.
+        without a marker cannot be resumed and is rewritten. An overview level is skipped
+        when complete; one an interrupted run left incomplete is finished from its windows
+        with ``True`` and rewritten with ``False``.
     max_retries : int, default 3
         Attempts per window, and per band in the fallback path.
     crs_groups : iterable of str, optional
@@ -1159,6 +1224,9 @@ def write_geozarr_group(
             compressor=compressor,
             geometry=geometry,
             dim_sizes=dim_sizes,
+            window_shards=window_shards,
+            max_retries=max_retries,
+            resume=resume,
         )
     except Exception as e:
         print(f"❌ Failed to create multiscales for {group_name}: {e}")
@@ -1265,6 +1333,9 @@ def create_geozarr_compliant_multiscales(
     compressor: Any = DEFAULT_COMPRESSOR,
     geometry: _PyramidGeometry | None = None,
     dim_sizes: DimSizes | None = None,
+    window_shards: int | None = None,
+    max_retries: int = 3,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """
     Create GeoZarr-spec compliant multiscales following the specification exactly.
@@ -1274,6 +1345,11 @@ def create_geozarr_compliant_multiscales(
     and bottom by the rows/columns trimmed by the /2 reduction, which is what the
     reduced data actually covers.
 
+    Every level is written in windows of ``window_shards``² shards (see
+    :func:`_write_overview_windows`), each retried up to ``max_retries`` times; with
+    ``resume`` a level an interrupted run left incomplete is finished from its marker,
+    otherwise it is rewritten.
+
     Returns
     -------
     dict
@@ -1281,6 +1357,8 @@ def create_geozarr_compliant_multiscales(
     """
     if compressor is DEFAULT_COMPRESSOR:
         compressor = make_compressor()
+    if window_shards is None:
+        window_shards = WINDOW_SHARDS
     group_path = _group_path(group_name)
     run_token = uuid.uuid4().hex
 
@@ -1390,10 +1468,12 @@ def create_geozarr_compliant_multiscales(
             print("Skipping level 0 - native resolution is already in group 0")
             continue
 
-        # Check if this overview level already exists in the store
+        # Check if this overview level already exists in the store: skipped when complete (a
+        # level without a marker predates the windows and is complete once its arrays exist),
+        # resumed with ``resume`` from the windows an interrupted run marked done.
         level_path = _join_path(group_path, level)
         _existing_level_ds = _load_existing_dataset(store, level_path, shard_size, dim_sizes)
-        if (
+        present = (
             _is_level_complete(_existing_level_ds, data_vars)
             and _is_level_valid(_existing_level_ds)
             and _layout_matches(
@@ -1404,7 +1484,9 @@ def create_geozarr_compliant_multiscales(
                 ),
                 data_vars,
             )
-        ):
+        )
+        done, complete, done_size = _read_window_marker(store, level_path)
+        if present and (complete or done_size is None):
             print(
                 f"Overview level {level} already exists and is complete, "
                 "loading from store and skipping creation..."
@@ -1460,17 +1542,15 @@ def create_geozarr_compliant_multiscales(
             overview_ds, level, shard_size, compressor, chunk_size, enable_sharding, dim_sizes
         )
 
-        # Write overview level: one dask block per shard, one compute per level
+        # Write overview level: one dask block per shard, one compute per window
         start_time = time.time()
-        print(f"Writing overview level {level} at {level_path}")
-        overview_ds.to_zarr(
-            store,
-            group=level_path,
-            mode="w",
-            consolidated=False,
-            zarr_format=3,
-            encoding=encoding,
-            align_chunks=not enable_sharding,
+        if resume and present and done_size == window_shards:
+            print(f"Resuming overview level {level} at {level_path} from {len(done)} windows done")
+        else:
+            print(f"Writing overview level {level} at {level_path}")
+            done = set()
+        _write_overview_windows(
+            overview_ds, store, level_path, data_vars, encoding, enable_sharding, window_shards, max_retries, done
         )
 
         overview_datasets[level] = overview_ds
@@ -1816,7 +1896,7 @@ def _write_level0_windows(
             if done:
                 print("  Level-1 arrays of the interrupted run are incomplete: rewriting every window")
                 done.clear()
-            fused_ds.to_zarr(
+            _metadata_only(fused_ds).to_zarr(
                 store,
                 group=fused_path,
                 mode="w",
@@ -1831,23 +1911,14 @@ def _write_level0_windows(
         fy, fx = first.shape[-2] // l1_h, first.shape[-1] // l1_w
         print(f"  Fusing overview level {fused_path} into the level-0 windows")
 
-    first = ds[variables[0]].data
-    windows = _level0_windows(first.chunks[-2], first.chunks[-1], window_shards)
-    todo = [w for w in windows if w[0] not in done]
-    print(f"  Writing level 0 in {len(windows)} windows of {window_shards}² blocks ({len(todo)} to do, {len(done)} done)")
-    for n, (key, ys, xs) in enumerate(todo, 1):
+    def _window_graph(ys: slice, xs: slice) -> list[Any]:
         delayed = []
         for v in variables:
             data = ds[v].data
             win = data[..., ys, xs]
             offset = (0,) * (data.ndim - 2) + (ys.start, xs.start)
             if fused_level is None:
-                delayed.append(
-                    da.map_blocks(
-                        _write_block, win, arr=arrays[v], offset=offset, dtype=bool,
-                        chunks=tuple((1,) * len(c) for c in win.chunks), meta=np.empty((0,) * win.ndim, dtype=bool),
-                    )
-                )
+                delayed.append(_write_blocks(win, arrays[v], offset))
                 continue
             h1 = min((ys.stop - ys.start) // fy, l1_h - ys.start // fy)
             w1 = min((xs.stop - xs.start) // fx, l1_w - xs.start // fx)
@@ -1858,20 +1929,54 @@ def _write_level0_windows(
                 red = red.rechunk({red.ndim - 2: unit[0], red.ndim - 1: unit[1]})
             region = (slice(None),) * (data.ndim - 2) + (slice(ys.start // fy, ys.start // fy + h1), slice(xs.start // fx, xs.start // fx + w1))
             delayed.append(da.store(red, l1, regions=region, lock=False, compute=False))
-        for attempt in range(max_retries):
-            try:
-                dask.compute(*delayed)
-                break
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f"    ⚠️  Window {key} attempt {attempt + 1} failed: {e}; retrying")
-                    time.sleep(2)
-                else:
-                    raise RuntimeError(f"window {key} failed after {max_retries} attempts: {e}") from e
-        done.add(key)
-        _write_window_marker(store, group_path, done, window_shards, complete=len(done) == len(windows))
-        if n % 10 == 0 or n == len(todo):
-            print(f"    window {n}/{len(todo)} done")
+        return delayed
+
+    first = ds[variables[0]].data
+    windows = _block_windows(first.chunks[-2], first.chunks[-1], window_shards)
+    _compute_windows(store, group_path, "level 0", windows, done, window_shards, max_retries, _window_graph)
+
+
+def _write_overview_windows(
+    overview_ds: xr.Dataset,
+    store: StoreLike,
+    level_path: str,
+    data_vars: Sequence[Hashable],
+    encoding: Mapping[Hashable, Any],
+    enable_sharding: bool,
+    window_shards: int,
+    max_retries: int,
+    done: set[tuple[int, int]],
+) -> None:
+    """
+    Write an overview level in windows of ``window_shards``² shards, like level 0: one dask
+    compute per window, so the graph is bounded by the window whatever the size of the level,
+    and an interrupted level resumes from the windows done. The level's metadata, coordinates
+    and an empty marker are created first, in one write, unless ``done`` lists windows of an
+    interrupted run, whose arrays are kept.
+    """
+    if not done:
+        _metadata_only(overview_ds).assign_attrs(_window_marker(set(), window_shards, complete=False)).to_zarr(
+            store,
+            group=level_path,
+            mode="w",
+            consolidated=False,
+            zarr_format=3,
+            encoding=encoding,
+            align_chunks=not enable_sharding,
+            compute=False,
+        )
+    arrays = {v: zarr.open_array(store, path=_join_path(level_path, str(v)), mode="r+", zarr_format=3) for v in data_vars}
+
+    def _window_graph(ys: slice, xs: slice) -> list[Any]:
+        delayed = []
+        for v in data_vars:
+            data = overview_ds[v].data
+            delayed.append(_write_blocks(data[..., ys, xs], arrays[v], (0,) * (data.ndim - 2) + (ys.start, xs.start)))
+        return delayed
+
+    first = overview_ds[data_vars[0]].data
+    windows = _block_windows(first.chunks[-2], first.chunks[-1], window_shards)
+    _compute_windows(store, level_path, f"level {level_path}", windows, done, window_shards, max_retries, _window_graph)
 
 
 def write_dataset_band_by_band_with_validation(
@@ -1999,6 +2104,8 @@ def write_dataset_band_by_band_with_validation(
         # Drop on-disk chunk hints inherited from the source; keep the CRS reference.
         single_var_ds[var].encoding = {k: v for k, v in enc.items() if k == "grid_mapping"}
         _pin_grid_mapping(single_var_ds)
+        if not compute:
+            single_var_ds = _metadata_only(single_var_ds)
         return single_var_ds.to_zarr(
             store,
             group=_group_or_none(group_path),

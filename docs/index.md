@@ -27,8 +27,8 @@ the scene-sized assumption. Reach for it if you need:
 - **Lazy end to end.** Level 0 is one task per output shard, level 1 is reduced inside the same
   task, every further level reads its parent shards from the store one at a time; nothing is
   ever materialised as a whole array in memory.
-- **Resumable.** Level 0 is written in windows and each one done is recorded, so an interrupted
-  run with `--resume` finishes from the missing windows instead of starting over.
+- **Resumable.** Every level is written in windows and each one done is recorded, so an
+  interrupted run with `--resume` finishes from the missing windows instead of starting over.
 - **Store-aware.** One read per input block, shard-aligned reads and writes, all-nodata blocks
   never touch the store, and a band-last image is read and transposed once per block.
 - **Exact.** Level L has exactly `2**L` native pixels per pixel, anchored top-left; nodata is a

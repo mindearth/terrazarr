@@ -317,6 +317,94 @@ def test_windowed_write_equals_reference(tmp_path, dask_client, window_shards):
     assert complete and size == window_shards and len(done) == (16 // window_shards + (16 % window_shards > 0)) ** 2
 
 
+def _windows(size, shard=64, window_shards=2):
+    blocks = -(-size // shard)
+    return (-(-blocks // window_shards)) ** 2
+
+
+@pytest.mark.parametrize("fuse", [True, False])
+@pytest.mark.parametrize("shape", [(1024, 1024), (2, 512, 512)])
+def test_every_level_is_written_in_windows(tmp_path, dask_client, monkeypatch, fuse, shape):
+    """Overview levels are written in windows of 2² shards like level 0, each recorded in the
+    level's marker; a fused level 1 is written in the level-0 windows and has none."""
+    monkeypatch.setattr(geozarr, "FUSE_LEVEL_1", fuse)
+    inp = make_input(tmp_path / "in.zarr", shape=shape, input_chunk=128)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, **KW)
+    store = get_zarr_store(out)
+    nlevels = len(zarr.open_group(store, mode="r").attrs["multiscales"]["layout"])
+    assert nlevels == {1024: 5, 512: 4}[shape[-1]]
+    l0 = _open_level(out, 0)["data"].values
+    np.testing.assert_array_equal(l0, xr.open_dataset(get_zarr_store(inp), engine="zarr", consolidated=False)["data"].values)
+    for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
+        np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref, err_msg=f"level {lv}")
+        done, complete, size = geozarr._read_window_marker(store, str(lv))
+        if lv == 1 and fuse:
+            assert size is None, "the fused level 1 is written in the level-0 windows"
+            continue
+        assert complete and size == 2 and len(done) == _windows(ref.shape[-1]), f"level {lv}"
+
+
+def test_unsharded_levels_are_written_in_windows(tmp_path, dask_client):
+    """Without sharding a window block (the shard size) spans several zarr chunks."""
+    inp = make_input(tmp_path / "in.zarr", shape=(1000, 1000), input_chunk=250)
+    out = str(tmp_path / "out.zarr")
+    _run(inp, out, **{**KW, "chunk_size": 32, "enable_sharding": False})
+    store = get_zarr_store(out)
+    nlevels = len(zarr.open_group(store, mode="r").attrs["multiscales"]["layout"])
+    l0 = _open_level(out, 0)["data"].values
+    for lv, ref in enumerate(_reference_levels(l0, nlevels, 0, "uint8")):
+        np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref, err_msg=f"level {lv}")
+        arr = zarr.open_array(store, path=f"{lv}/data", mode="r")
+        assert arr.shards is None and arr.chunks == (min(32, ref.shape[0]), min(32, ref.shape[1]))
+    assert len(geozarr._read_window_marker(store, "2")[0]) == _windows(250)
+
+
+@pytest.mark.parametrize("resume", [True, False])
+def test_overview_window_failure_resumes_or_rewrites_the_level(tmp_path, dask_client, monkeypatch, capsys, resume):
+    """A window of level 2 (4 windows of 2² shards) that fails for good leaves the level
+    incomplete with the windows before it marked done, and no level above it. The next run
+    finishes the level from its marker with resume, without rewriting the windows done, and
+    rewrites it without; the incomplete level is never taken as complete."""
+    orig = geozarr._read_reduce_block
+
+    def failing(block_id=None, **kwargs):
+        if kwargs["path"] == "1/data" and block_id[-2:] == (2, 2):
+            raise RuntimeError("permanent overview failure")
+        return orig(block_id=block_id, **kwargs)
+
+    inp = make_input(tmp_path / "in.zarr", shape=(1024, 1024), input_chunk=128)
+    out = str(tmp_path / "out.zarr")
+    store = get_zarr_store(out)
+    monkeypatch.setattr(geozarr, "_read_reduce_block", failing)
+    with pytest.raises(RuntimeError, match=r"window \(1, 1\) failed"):
+        _run(inp, out, **KW)
+    done, complete, size = geozarr._read_window_marker(store, "2")
+    assert not complete and size == 2 and done == {(0, 0), (0, 1), (1, 0)}
+    assert not os.path.exists(os.path.join(out, "3")), "no level above the incomplete one"
+    shards = {os.path.join(r, f): os.stat(os.path.join(r, f)).st_mtime_ns
+              for r, _, fs in os.walk(os.path.join(out, "2", "data", "c")) for f in fs
+              if f.isdigit() and not (int(os.path.basename(r)) >= 2 and int(f) >= 2)}
+    assert len(shards) == 12, "the shards of the 3 windows done"
+    time.sleep(0.05)
+
+    monkeypatch.setattr(geozarr, "_read_reduce_block", orig)
+    capsys.readouterr()
+    _run(inp, out, resume=resume, **KW)
+    log = capsys.readouterr().out
+    after = {f: os.stat(f).st_mtime_ns for f in shards}
+    if resume:
+        assert "Resuming overview level 2" in log and "(1 to do, 3 done)" in log
+        assert after == shards, "windows already done were rewritten"
+    else:
+        assert "Writing overview level 2" in log and "(4 to do, 0 done)" in log
+        assert after != shards, "the incomplete level was not rewritten"
+    assert geozarr._read_window_marker(store, "2")[1]
+    l0 = _open_level(out, 0)["data"].values
+    for lv, ref in enumerate(_reference_levels(l0, 5, 0, "uint8")):
+        np.testing.assert_array_equal(_open_level(out, lv)["data"].values, ref, err_msg=f"level {lv}")
+
+
 def test_all_fill_blocks_skip_the_write(tmp_path, dask_client):
     """A level-0 block equal to the array fill value is not written (zarr would store nothing
     for it, but only after walking every inner chunk); a block of nodata that is not the fill

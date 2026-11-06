@@ -1,3 +1,5 @@
+import warnings
+
 import dask.array as da
 import numpy as np
 import pytest
@@ -42,6 +44,29 @@ def test_median_uses_float32_for_small_integers():
     out = utils.downsample_2d_array(da.from_array(a, chunks=(8, 8)), 4, 4, method="median")
     assert out.dtype == np.float32
     np.testing.assert_allclose(out.compute(), np.median(a.reshape(4, 2, 4, 2), axis=(1, 3)))
+
+
+@pytest.mark.parametrize("dtype", ["int8", "uint16", "float32", "float64"])
+@pytest.mark.parametrize("factor", [(2, 2), (3, 2)])
+def test_median_of_the_valid_pixels_matches_nanmedian(dtype, factor):
+    """1 to 4 valid pixels per block (even and odd counts), NaN and nodata invalid, a lead dim."""
+    rng = np.random.default_rng(1)
+    a = rng.integers(1, 20, (2, 30, 31)).astype(dtype)
+    a[rng.random(a.shape) < 0.4] = 0
+    if a.dtype.kind == "f":
+        a[rng.random(a.shape) < 0.1] = np.nan
+    fy, fx = factor
+    th, tw = 30 // fy, 31 // fx
+    b = a[:, : th * fy, : tw * fx].reshape(2, th, fy, tw, fx).astype("float64")
+    b[b == 0] = np.nan
+    cnt = (~np.isnan(b)).sum(axis=(2, 4))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN blocks
+        ref = np.nanmedian(b, axis=(2, 4))
+    ref = np.where(cnt >= 0.3 * fy * fx, ref, 0)
+    out = utils.reduce_block(a, fy, fx, "median", nodata_value=0)
+    assert out.dtype == (np.float64 if dtype == "float64" else np.float32)
+    np.testing.assert_array_equal(out, ref.astype(out.dtype))
 
 
 def test_float_nan_is_nodata_and_valid_fraction_rule():
