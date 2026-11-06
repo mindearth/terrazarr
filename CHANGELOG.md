@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `method="median"` with a nodata value no longer goes through `np.nanmedian`, whose masked-array
+  path took about 32 times the shard in memory (2.2 GB and 91 s on an 8192² int8 shard), so
+  workers paused or were killed. The valid values of each block are sorted instead, with the
+  same result: 0.75 GB and 3 s on the same shard
+  ([#11](https://github.com/mindearth/terrazarr/issues/11)).
+
 ### Security
 
 - Require `aiohttp>=3.14.4` (pulled in by `s3fs`), which fixes the aiohttp advisories up to 3.14.3

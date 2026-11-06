@@ -39,6 +39,25 @@ def _fill_value(dtype: np.dtype, fill: float) -> Any:
     return dtype.type(fill)
 
 
+def _block_median(blocks: np.ndarray, valid: np.ndarray, work: np.dtype) -> np.ndarray:
+    """
+    Median of the valid values of every ``(fy, fx)`` block of ``blocks`` (``(..., th, fy, tw,
+    fx)``), NaN where none is valid. The ``fy * fx`` values of each output pixel are sorted along
+    one axis, invalid ones (NaN) last, and the middle one or two are taken by valid count: a few
+    times the block in memory, where ``np.nanmedian`` over two axes goes through masked arrays
+    (32 times the block and 30 times slower on an 8192² int8 shard). With every value valid,
+    ``np.median`` is faster.
+    """
+    vals = np.moveaxis(blocks, -3, -2).astype(work, order="C")
+    vals = vals.reshape(*vals.shape[:-2], -1)
+    vals[~np.moveaxis(valid, -3, -2).reshape(vals.shape)] = np.nan
+    vals.sort(axis=-1)
+    k = vals.shape[-1] - np.isnan(vals).sum(axis=-1, keepdims=True, dtype=np.int32)
+    lo = np.take_along_axis(vals, np.maximum(k - 1, 0) // 2, axis=-1)
+    hi = np.take_along_axis(vals, np.minimum(k // 2, vals.shape[-1] - 1), axis=-1)
+    return ((lo + hi) / 2)[..., 0]
+
+
 def reduce_block(
     block: np.ndarray,
     fy: int,
@@ -149,14 +168,10 @@ def reduce_block(
                 reducer = np.nanmin if method == "min" else np.nanmax
                 result = reducer(masked, axis=axes)
     elif method == "median":
-        work = res_dtype
         if valid is None:
-            result = np.median(blocks.astype(work, copy=False), axis=axes)
+            result = np.median(blocks.astype(res_dtype, copy=False), axis=axes)
         else:
-            masked = np.where(valid, blocks.astype(work, copy=False), work.type(np.nan))
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                result = np.nanmedian(masked, axis=axes)
+            result = _block_median(blocks, valid, res_dtype)
     else:
         raise ValueError(f"Unknown method: {method}")
 
