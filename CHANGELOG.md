@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-06
+
 ### Changed
 
 - Every overview level is written in windows of `window_shards`² shards, like level 0: one dask
@@ -95,7 +97,8 @@ Initial release.
 - Documentation site with API reference, benchmarks against eopf-geozarr, topozarr and GDAL, and
   a live demo serving a GeoZarr pyramid through TiTiler.
 
-[Unreleased]: https://github.com/mindearth/terrazarr/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mindearth/terrazarr/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/mindearth/terrazarr/releases/tag/v0.2.1
 [0.2.0]: https://github.com/mindearth/terrazarr/releases/tag/v0.2.0
 [0.1.4]: https://github.com/mindearth/terrazarr/releases/tag/v0.1.4
 [0.1.3]: https://github.com/mindearth/terrazarr/releases/tag/v0.1.3
