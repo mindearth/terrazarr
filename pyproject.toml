@@ -44,6 +44,12 @@ Upstream = "https://github.com/EOPF-Explorer/data-model"
 terrazarr = "terrazarr.cli:main"
 geozarr-pyramid = "terrazarr.cli:main"
 
+[project.optional-dependencies]
+icechunk = [
+    "icechunk>=1.1,<2 ; python_full_version < '3.12'",
+    "icechunk>=2.3 ; python_full_version >= '3.12'",
+]
+
 [dependency-groups]
 dev = ["pytest>=8", "psutil>=5.9", "ruff>=0.6"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]

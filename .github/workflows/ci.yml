@@ -22,7 +22,7 @@ jobs:
       - name: Install
         run: |
           uv venv --clear .venv
-          uv pip install --python .venv/bin/python -e . --group dev
+          uv pip install --python .venv/bin/python -e '.[icechunk]' --group dev
       - name: Lint
         run: .venv/bin/ruff check src tests examples bench
       - name: Tests

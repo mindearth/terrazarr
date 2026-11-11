@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Icechunk repositories as input and output (optional dependency, `pip install 'terrazarr[icechunk]'`,
+  Icechunk 2 on Python 3.12+ and 1 on 3.11). `to_geozarr(ds, repo, branch="main")` with an
+  `icechunk.Repository` (`--output-icechunk`, `--output-branch`) writes the pyramid in commits, one per
+  window of every level with its completion marker, so `resume` continues from
+  the last commit. Workers write through forks of the session, merged back before each commit.
+  `--input-icechunk` and `--input-ref` read an input repository at a branch, tag or snapshot id.
+- An icechunk output is written with manifests split every `2 * window_shards` shards per dim (64
+  by default), so a commit doesn't rewrite the whole array's manifest. On 16k shards, a commit took 6 ms
+  instead of 22 ms.
+
 ## [0.2.1] - 2026-11-06
 
 ### Changed

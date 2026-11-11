@@ -44,7 +44,7 @@ from zarr.storage import StoreLike
 from zarr.storage._common import make_store_path
 
 from terrazarr import utils
-from terrazarr.store import get_zarr_store, set_spatial_info
+from terrazarr.store import IcechunkBranchStore, get_output_store, is_icechunk, set_spatial_info
 from terrazarr.types import (
     OverviewLevelJSON,
     StandardXCoordAttrsJSON,
@@ -140,6 +140,51 @@ def _delete_prefix(store: StoreLike, path: str) -> None:
         pass
     except Exception as cleanup_error:
         print(f"    ⚠️ Failed to remove {path}: {cleanup_error}")
+
+
+def _commit(store: StoreLike, message: str) -> str | None:
+    """Commit the pending changes of an icechunk branch store; a no-op on any other store."""
+    if isinstance(store, IcechunkBranchStore):
+        return store.commit(message)
+    return None
+
+
+def _to_zarr(
+    ds: xr.Dataset,
+    store: StoreLike,
+    *,
+    group: str | None,
+    mode: str,
+    encoding: Mapping[Hashable, Any],
+    align_chunks: bool = False,
+) -> None:
+    """
+    ``ds.to_zarr`` (zarr v3, not consolidated), or ``icechunk.xarray.to_icechunk`` when the
+    store is an icechunk branch and dask writes: the workers write through a fork of the
+    session, merged back here.
+    """
+    if isinstance(store, IcechunkBranchStore) and any(isinstance(v.data, da.Array) for v in ds.variables.values()):
+        from icechunk.xarray import to_icechunk
+
+        _commit(store, f"before writing {group or '/'}")  # a fork needs a session without changes
+        to_icechunk(ds, store.session, group=group, mode=mode, encoding=encoding, align_chunks=align_chunks)
+        return
+    ds.to_zarr(store, group=group, mode=mode, consolidated=False, zarr_format=3, encoding=encoding, align_chunks=align_chunks)
+
+
+def _session_block(arr: zarr.Array, ndim: int) -> np.ndarray:
+    """The icechunk fork session ``arr`` was written through, as a one-element block."""
+    out = np.empty((1,) * ndim, dtype=object)
+    out.flat[0] = arr.store.session
+    return out
+
+
+def _first(pair: tuple[Any, Any]) -> Any:
+    return pair[0]
+
+
+def _second(pair: tuple[Any, Any]) -> Any:
+    return pair[1]
 
 
 DimSizes = Mapping[Hashable, tuple[int, int]]
@@ -421,12 +466,17 @@ def _block_slices(block_info: Any, offset: Sequence[int]) -> tuple[slice, ...]:
 
 
 def _write_block(
-    block: np.ndarray, arr: zarr.Array, offset: Sequence[int], block_info: Any = None
+    block: np.ndarray, arr: zarr.Array, offset: Sequence[int], with_session: bool = False, block_info: Any = None
 ) -> np.ndarray:
-    """Write one level-0 block; an all-fill block is skipped (zarr would store nothing)."""
+    """
+    Write one block; an all-fill block is skipped (zarr would store nothing). With
+    ``with_session`` (an icechunk fork) the block returned holds the fork session.
+    """
     block = np.ascontiguousarray(block)
     if not _all_fill(block, arr.fill_value):
         arr[_block_slices(block_info, offset)] = block
+    if with_session:
+        return _session_block(arr, block.ndim)
     return np.ones((1,) * block.ndim, dtype=bool)
 
 
@@ -439,19 +489,24 @@ def _write_and_reduce(
     nodata_value: float | None,
     out_dtype: Any,
     offset: Sequence[int] = (),
+    with_session: bool = False,
     block_info: Any = None,
-) -> np.ndarray:
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Write one level-0 block and return its reduction for level 1: one read per block.
 
     The block is made contiguous once (a band-last source arrives as a strided transpose),
     and an all-fill block skips the zarr write altogether: zarr stores nothing for it but
-    would still walk every inner chunk of the shard to find that out.
+    would still walk every inner chunk of the shard to find that out. With ``with_session``
+    (an icechunk fork) the reduction comes with the fork session, see :func:`_session_block`.
     """
     block = np.ascontiguousarray(block)
     if not _all_fill(block, arr.fill_value):
         arr[_block_slices(block_info, offset)] = block
-    return utils.reduce_block(block, fy, fx, method, nodata_value, out_dtype)
+    reduced = utils.reduce_block(block, fy, fx, method, nodata_value, out_dtype)
+    if with_session:
+        return reduced, _session_block(arr, block.ndim)
+    return reduced
 
 
 def _fused_write_reduce_array(
@@ -464,12 +519,15 @@ def _fused_write_reduce_array(
     nodata_value: float | None,
     offset: Sequence[int] | None = None,
     arr: zarr.Array | None = None,
-) -> da.Array:
+    with_session: bool = False,
+) -> da.Array | tuple[da.Array, da.Array]:
     """
     Lazy level-1 array whose tasks also write the level-0 blocks of ``data`` to the array
     already created at ``array_path``. Dask fuses a block read into its first consumer, so
     two consumers of the input would read it twice; this keeps one read per block.
-    ``data`` may be a window of the level-0 array starting at ``offset``.
+    ``data`` may be a window of the level-0 array starting at ``offset``. With
+    ``with_session`` (``arr`` on an icechunk fork) returns ``(level1, sessions)``, the second
+    an object array of the fork sessions the level-0 writes went through.
     """
     if arr is None:
         arr = zarr.open_array(store, path=array_path, mode="r+", zarr_format=3)
@@ -480,6 +538,7 @@ def _fused_write_reduce_array(
         tuple(c // fy for c in data.chunks[-2]),
         tuple(c // fx for c in data.chunks[-1]),
     )
+    meta = np.empty((0,) * data.ndim, dtype=data.dtype)
     out = da.map_blocks(
         _write_and_reduce,
         data,
@@ -490,13 +549,21 @@ def _fused_write_reduce_array(
         nodata_value=nodata_value,
         out_dtype=data.dtype,
         offset=tuple(offset) if offset is not None else (0,) * data.ndim,
+        with_session=with_session,
         dtype=data.dtype,
         chunks=out_chunks,
-        meta=np.empty((0,) * data.ndim, dtype=data.dtype),
+        meta=meta,
     )
+    sessions = None
+    if with_session:
+        # Each task returns (reduction, session): split them into two arrays of the same blocks.
+        sessions = out.map_blocks(
+            _second, dtype=object, chunks=tuple((1,) * len(c) for c in out.chunks), meta=np.empty((0,) * data.ndim, dtype=object)
+        )
+        out = out.map_blocks(_first, dtype=data.dtype, meta=meta)
     if out.shape[-2] != target_height or out.shape[-1] != target_width:
         out = out[..., :target_height, :target_width]
-    return out
+    return (out, sessions) if with_session else out
 
 
 def _metadata_only(ds: xr.Dataset) -> xr.Dataset:
@@ -515,11 +582,15 @@ def _metadata_only(ds: xr.Dataset) -> xr.Dataset:
     )
 
 
-def _write_blocks(data: da.Array, arr: zarr.Array, offset: Sequence[int]) -> da.Array:
-    """Lazy write of every block of ``data`` into ``arr``, ``data`` starting at ``offset``."""
+def _write_blocks(data: da.Array, arr: zarr.Array, offset: Sequence[int], with_session: bool = False) -> da.Array:
+    """
+    Lazy write of every block of ``data`` into ``arr``, ``data`` starting at ``offset``. With
+    ``with_session`` (``arr`` on an icechunk fork) every block of the result is the fork session.
+    """
+    dtype = object if with_session else bool
     return da.map_blocks(
-        _write_block, data, arr=arr, offset=tuple(offset), dtype=bool,
-        chunks=tuple((1,) * len(c) for c in data.chunks), meta=np.empty((0,) * data.ndim, dtype=bool),
+        _write_block, data, arr=arr, offset=tuple(offset), with_session=with_session, dtype=dtype,
+        chunks=tuple((1,) * len(c) for c in data.chunks), meta=np.empty((0,) * data.ndim, dtype=dtype),
     )
 
 
@@ -596,20 +667,40 @@ def _compute_windows(
     done: set[tuple[int, int]],
     window_shards: int,
     max_retries: int,
-    window_graph: Callable[[slice, slice], list[Any]],
+    window_graph: Callable[[slice, slice, Callable[[zarr.Array], zarr.Array]], list[Any]],
 ) -> None:
     """
-    Compute the windows not in ``done``, one dask compute of ``window_graph(ys, xs)`` each,
-    retried up to ``max_retries`` times. Each finished window is added to ``done`` and to the
+    Compute the windows not in ``done``, one dask compute of ``window_graph(ys, xs, target)``
+    each, retried up to ``max_retries`` times; the graph writes every array ``arr`` of the
+    level through ``target(arr)``. Each finished window is added to ``done`` and to the
     marker attributes of the level group, the completion flag with the last one.
+
+    On an icechunk branch every attempt at a window writes through a fresh fork of the
+    session (``target`` re-opens the arrays on it), every task returns its fork, and the
+    window is merged and committed with its marker: the commit is the window, so an
+    interrupted run resumes from the last one.
     """
+    branch = store if isinstance(store, IcechunkBranchStore) else None
+
+    def _write_window(key: tuple[int, int], ys: slice, xs: slice) -> None:
+        if branch is None:
+            dask.compute(*window_graph(ys, xs, _same_array))
+            return
+        fork = branch.fork(f"level {group_path or '/'} before window {list(key)}")
+
+        def on_fork(arr: zarr.Array) -> zarr.Array:
+            return zarr.open_array(fork.store, path=arr.path, mode="r+", zarr_format=3)
+
+        sessions = dask.compute(*window_graph(ys, xs, on_fork))
+        branch.merge(s for blocks in sessions for s in blocks.flat)
+
     todo = [w for w in windows if w[0] not in done]
     print(f"  Writing {label} in {len(windows)} windows of {window_shards}² blocks ({len(todo)} to do, {len(done)} done)")
+    _commit(store, f"level {group_path or '/'} arrays")
     for n, (key, ys, xs) in enumerate(todo, 1):
-        delayed = window_graph(ys, xs)
         for attempt in range(max_retries):
             try:
-                dask.compute(*delayed)
+                _write_window(key, ys, xs)
                 break
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -619,8 +710,13 @@ def _compute_windows(
                     raise RuntimeError(f"window {key} failed after {max_retries} attempts: {e}") from e
         done.add(key)
         _write_window_marker(store, group_path, done, window_shards, complete=len(done) == len(windows))
+        _commit(store, f"level {group_path or '/'} window {list(key)}")
         if n % 10 == 0 or n == len(todo):
             print(f"    window {n}/{len(todo)} done")
+
+
+def _same_array(arr: zarr.Array) -> zarr.Array:
+    return arr
 
 
 def _overview_arrays_from_store(
@@ -676,8 +772,9 @@ def _overview_arrays_from_store(
 
 def to_geozarr(
     data: xr.DataArray | xr.Dataset | xr.DataTree,
-    output: str,
+    output: Any,
     *,
+    branch: str = "main",
     groups: Iterable[str] | None = None,
     chunk_size: Sizes | None = None,
     shard_size: Sizes | None = None,
@@ -708,8 +805,17 @@ def to_geozarr(
     data : xarray.DataArray, xarray.Dataset or xarray.DataTree
         A DataArray is written as the variable ``data`` (or its name); a Dataset as the root
         group; a DataTree group by group (see ``groups``).
-    output : str
-        Output store: a local path or an ``s3://`` URL (credentials from the environment).
+    output : str or icechunk.Repository
+        Output store: a local path or an ``s3://`` URL (credentials from the environment), or
+        an icechunk Repository (``pip install 'terrazarr[icechunk]'``, see
+        :func:`terrazarr.store.open_icechunk_repo`), written to ``branch`` in commits: the
+        arrays and attributes before the workers write, then one commit per window of every
+        level with its completion marker, so ``resume`` continues from the last commit of an
+        interrupted run.
+    branch : str, default "main"
+        Branch of an icechunk ``output``, created from the tip of ``main`` when absent: a
+        pyramid already on ``main`` is then on the new branch too, and reused like an
+        existing store (see ``resume``).
     groups : iterable of str, optional
         For a DataTree, the groups to write as pyramids; default the root when it holds data
         variables, otherwise every group that does.
@@ -782,7 +888,9 @@ def to_geozarr(
     if compressor is DEFAULT_COMPRESSOR:
         compressor = make_compressor()
     if store is None:
-        store = get_zarr_store(output_path, s3_profile)
+        store = get_output_store(output_path, branch, s3_profile, window_shards or WINDOW_SHARDS)
+    elif is_icechunk(store):
+        raise TypeError("Pass an icechunk Repository as `output` instead of an icechunk store as `store`")
 
     if enable_sharding:
         print("🔧 Zarr sharding enabled for spatial dimensions")
@@ -813,6 +921,8 @@ def to_geozarr(
     print("Consolidating metadata at root level for consistent zarr access...")
     consolidate_metadata(store)
     print("✅ Root level metadata consolidation completed")
+    if snapshot := _commit(store, "pyramid metadata"):
+        print(f"✅ Committed to icechunk branch {store.branch!r}: snapshot {snapshot}")
 
     return dt_geozarr
 
@@ -986,14 +1096,7 @@ def iterative_copy(
             )
             encoding = _create_encoding(ds, compressor, shard_size)
             _pin_grid_mapping(ds)
-            ds.to_zarr(
-                store,
-                group=_group_or_none(_group_path(current_group_path)),
-                mode="w",
-                consolidated=False,
-                zarr_format=3,
-                encoding=encoding,
-            )
+            _to_zarr(ds, store, group=_group_or_none(_group_path(current_group_path)), mode="w", encoding=encoding)
             dt_result[relative_path] = xr.DataTree(ds)
 
         written_groups.add(current_group_path)
@@ -1205,6 +1308,8 @@ def write_geozarr_group(
         )
         if not success:
             raise RuntimeError(f"Failed to write all bands for {group_name}")
+        # The overview tasks read level 0 from the last commit.
+        _commit(store, f"{level0_path} level 0")
 
     # Validate level 0 orientation and rasterio consistency before building the pyramid.
     _validate_pyramid_level(ds, f"{group_name}/0")
@@ -1236,6 +1341,7 @@ def write_geozarr_group(
     print(f"  Consolidating metadata for group {group_name}...")
     consolidate_metadata(store, path=_group_or_none(group_path))
     print("  ✅ Metadata consolidated")
+    _commit(store, f"group {group_name}")
 
     return dt
 
@@ -1445,6 +1551,7 @@ def create_geozarr_compliant_multiscales(
     )
     zarr_group.attrs.update(group_attrs)
     print(f"Added GeoZarr-spec compliant multiscales metadata to {group_name}")
+    _commit(store, f"{group_name} multiscales metadata")
 
     # Create overview levels as children groups
     timing_data = []
@@ -1549,6 +1656,7 @@ def create_geozarr_compliant_multiscales(
         else:
             print(f"Writing overview level {level} at {level_path}")
             done = set()
+        # On icechunk every window is a commit: the next level's tasks read the last one.
         _write_overview_windows(
             overview_ds, store, level_path, data_vars, encoding, enable_sharding, window_shards, max_retries, done
         )
@@ -1871,8 +1979,10 @@ def _write_level0_windows(
     together; with ``fused_level`` every task also reduces its block and the window
     stores the reduction into the level-1 array (created here from the builder), in
     shard-aligned regions. Windows in ``done`` are skipped; each finished window is
-    added to the marker attributes, the completion flag last.
+    added to the marker attributes, the completion flag last. On an icechunk branch each
+    window is a commit, see :func:`_compute_windows`.
     """
+    with_session = isinstance(store, IcechunkBranchStore)
     arrays = {v: zarr.open_array(store, path=_join_path(group_path, str(v)), mode="r+", zarr_format=3) for v in variables}
     l1_arrays: dict[Hashable, zarr.Array] = {}
     fy = fx = 1
@@ -1911,24 +2021,34 @@ def _write_level0_windows(
         fy, fx = first.shape[-2] // l1_h, first.shape[-1] // l1_w
         print(f"  Fusing overview level {fused_path} into the level-0 windows")
 
-    def _window_graph(ys: slice, xs: slice) -> list[Any]:
+    def _window_graph(ys: slice, xs: slice, target: Callable[[zarr.Array], zarr.Array]) -> list[Any]:
+        """The dask collections that write one window; with icechunk, object arrays of fork sessions."""
         delayed = []
         for v in variables:
             data = ds[v].data
             win = data[..., ys, xs]
             offset = (0,) * (data.ndim - 2) + (ys.start, xs.start)
             if fused_level is None:
-                delayed.append(_write_blocks(win, arrays[v], offset))
+                delayed.append(_write_blocks(win, target(arrays[v]), offset, with_session))
                 continue
             h1 = min((ys.stop - ys.start) // fy, l1_h - ys.start // fy)
             w1 = min((xs.stop - xs.start) // fx, l1_w - xs.start // fx)
-            red = _fused_write_reduce_array(win, store, "", h1, w1, method, nodata_value, offset=offset, arr=arrays[v])
-            l1 = l1_arrays[v]
+            red = _fused_write_reduce_array(
+                win, store, "", h1, w1, method, nodata_value, offset=offset, arr=target(arrays[v]), with_session=with_session
+            )
+            if with_session:
+                red, sessions = red
+                delayed.append(sessions)
+            l1 = target(l1_arrays[v])
             unit = (l1.shards or l1.chunks)[-2:]
             if any(c % u for c, u in zip(red.chunksize[-2:], unit)):
                 red = red.rechunk({red.ndim - 2: unit[0], red.ndim - 1: unit[1]})
             region = (slice(None),) * (data.ndim - 2) + (slice(ys.start // fy, ys.start // fy + h1), slice(xs.start // fx, xs.start // fx + w1))
-            delayed.append(da.store(red, l1, regions=region, lock=False, compute=False))
+            if with_session:
+                # da.store returns nothing from its tasks; this write returns the fork session
+                delayed.append(_write_blocks(red, l1, tuple(sl.start or 0 for sl in region), with_session=True))
+            else:
+                delayed.append(da.store(red, l1, regions=region, lock=False, compute=False))
         return delayed
 
     first = ds[variables[0]].data
@@ -1967,11 +2087,14 @@ def _write_overview_windows(
         )
     arrays = {v: zarr.open_array(store, path=_join_path(level_path, str(v)), mode="r+", zarr_format=3) for v in data_vars}
 
-    def _window_graph(ys: slice, xs: slice) -> list[Any]:
+    with_session = isinstance(store, IcechunkBranchStore)
+
+    def _window_graph(ys: slice, xs: slice, target: Callable[[zarr.Array], zarr.Array]) -> list[Any]:
         delayed = []
         for v in data_vars:
             data = overview_ds[v].data
-            delayed.append(_write_blocks(data[..., ys, xs], arrays[v], (0,) * (data.ndim - 2) + (ys.start, xs.start)))
+            offset = (0,) * (data.ndim - 2) + (ys.start, xs.start)
+            delayed.append(_write_blocks(data[..., ys, xs], target(arrays[v]), offset, with_session))
         return delayed
 
     first = overview_ds[data_vars[0]].data
@@ -2104,18 +2227,11 @@ def write_dataset_band_by_band_with_validation(
         # Drop on-disk chunk hints inherited from the source; keep the CRS reference.
         single_var_ds[var].encoding = {k: v for k, v in enc.items() if k == "grid_mapping"}
         _pin_grid_mapping(single_var_ds)
-        if not compute:
-            single_var_ds = _metadata_only(single_var_ds)
-        return single_var_ds.to_zarr(
-            store,
-            group=_group_or_none(group_path),
-            mode="a",
-            consolidated=False,
-            zarr_format=3,
-            encoding=var_encoding,
-            align_chunks=var_enc.get("shards") is None,
-            compute=compute,
-        )
+        kwargs = dict(group=_group_or_none(group_path), mode="a", encoding=var_encoding, align_chunks=var_enc.get("shards") is None)
+        if compute:
+            # through the icechunk fork when the store is a branch: the workers write these blocks
+            return _to_zarr(single_var_ds, store, **kwargs)
+        return _metadata_only(single_var_ds).to_zarr(store, consolidated=False, zarr_format=3, compute=False, **kwargs)
 
     written: list[Hashable] = []
     if to_write:
@@ -2188,7 +2304,12 @@ def consolidate_metadata(
     -------
     zarr.Group
         The group with consolidated metadata
+
+    A store without consolidated metadata (an icechunk branch, which lists its hierarchy
+    from the snapshot) is left as it is.
     """
+    if not getattr(store, "supports_consolidated_metadata", True):
+        return zarr.open_group(store, path=path, mode="r", use_consolidated=False)
     return zarr.Group(
         sync(async_consolidate_metadata(store, path=path, zarr_format=zarr_format))
     )

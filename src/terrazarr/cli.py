@@ -11,7 +11,7 @@ import os
 import xarray as xr
 
 from terrazarr.geozarr import make_compressor, resolve_layout, to_geozarr
-from terrazarr.store import get_zarr_store, set_spatial_info
+from terrazarr.store import get_zarr_store, icechunk_read_store, open_icechunk_repo, set_spatial_info
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +76,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, help="Input Zarr path (local or s3://...)")
     parser.add_argument("--output", required=True, help="Output GeoZarr path (local or s3://...)")
     parser.add_argument(
+        "--input-icechunk", action="store_true", default=False,
+        help="--input is an icechunk repository, read at --input-ref",
+    )
+    parser.add_argument(
+        "--input-ref", default="main", metavar="REF",
+        help="Branch, tag or snapshot id of an icechunk input (default main)",
+    )
+    parser.add_argument(
+        "--output-icechunk", action="store_true", default=False,
+        help="--output is an icechunk repository, created if absent and written to --output-branch "
+        "in commits (one per window of every level)",
+    )
+    parser.add_argument(
+        "--output-branch", default="main", metavar="BRANCH",
+        help="Branch of an icechunk output, created from main when absent (default main)",
+    )
+    parser.add_argument(
         "--chunk-size", type=_sizes, default=None, metavar="N|DIM=N,...",
         help="Zarr chunk: N for y and x, or per dim, e.g. y=512,x=512,band=4 (y equal to x). "
         "A dim left out has the input's chunk, else 256 on y/x and 1 on another dim",
@@ -126,7 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.input_ref != "main" and not args.input_icechunk:
+        parser.error("--input-ref needs --input-icechunk")
+    if args.output_branch != "main" and not args.output_icechunk:
+        parser.error("--output-branch needs --output-icechunk")
 
     client = get_dask_client(
         n_workers=args.workers,
@@ -135,19 +157,26 @@ def main(argv: list[str] | None = None) -> None:
     )
     log.info("Dask dashboard: %s", client.dashboard_link)
 
-    store = get_zarr_store(args.input, args.s3_profile)
+    if args.input_icechunk:
+        store = icechunk_read_store(open_icechunk_repo(args.input), args.input_ref)
+        open_kw = {"consolidated": False}  # icechunk lists the hierarchy from its snapshot
+    else:
+        store = get_zarr_store(args.input, args.s3_profile)
+        open_kw = {}
     # The layout first, from the input's encoding without dask, so the input is read in blocks
     # of the output shard instead of its own (possibly much smaller) chunks.
     chunks, shards = resolve_layout(
-        xr.open_dataset(store, engine="zarr", chunks=None), args.chunk_size, args.shard_size
+        xr.open_dataset(store, engine="zarr", chunks=None, **open_kw), args.chunk_size, args.shard_size
     )
-    ds = xr.open_dataset(store, engine="zarr", chunks=shards)
+    ds = xr.open_dataset(store, engine="zarr", chunks=shards, **open_kw)
     ds = set_spatial_info(ds)
+    output = open_icechunk_repo(args.output, create=True) if args.output_icechunk else args.output
 
     try:
         to_geozarr(
             ds,
-            args.output,
+            output,
+            branch=args.output_branch,
             chunk_size=chunks,
             shard_size=shards,
             sharding=args.sharding,

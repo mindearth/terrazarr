@@ -38,7 +38,7 @@ the scene-sized assumption. Reach for it if you need:
 ## Install
 
 ```bash
-pip install terrazarr
+pip install terrazarr               # or 'terrazarr[icechunk]' for Icechunk repositories
 ```
 
 or from a clone, with [uv](https://docs.astral.sh/uv/):
@@ -71,7 +71,8 @@ terrazarr --input in.zarr --output out.zarr \
   --compressor zstd --clevel 3
 ```
 
-Local paths and `s3://` URLs work for both input and output. The [API](api.md) page lists every
+Local paths and `s3://` URLs work for both input and output. So do [Icechunk](api.md#icechunk) repositories (`pip install 'terrazarr[icechunk]'`),
+written in commits that `--resume` continues from. The [API](api.md) page lists every
 option, the output layout and the conventions the store follows; [examples/](https://github.com/mindearth/terrazarr/tree/main/examples)
 has a synthetic raster that runs in under a minute, a GeoTIFF to GeoZarr script and an S3 to S3
 run for a large sparse raster.
