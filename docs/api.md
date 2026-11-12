@@ -103,7 +103,8 @@ dependency:
 pip install 'terrazarr[icechunk]'
 ```
 
-It installs Icechunk 2 on Python 3.12 and later, and Icechunk 1 on Python 3.11.
+It installs Icechunk 2 on Python 3.12 and later, and Icechunk 1 on Python 3.11, where it
+keeps xarray below 2026.9: Icechunk 1 does not work with later versions.
 
 To read one, open a read-only session and pass its store; read-only sessions travel to dask
 workers as they are:

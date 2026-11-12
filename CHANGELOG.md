@@ -7,7 +7,7 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - Icechunk repositories as input and output (optional dependency, `pip install 'terrazarr[icechunk]'`,
-  Icechunk 2 on Python 3.12+ and 1 on 3.11). `to_geozarr(ds, repo, branch="main")` with an
+  Icechunk 2 on Python 3.12+ and 1 on 3.11, with xarray below 2026.9 there). `to_geozarr(ds, repo, branch="main")` with an
   `icechunk.Repository` (`--output-icechunk`, `--output-branch`) writes the pyramid in commits, one per
   window of every level with its completion marker, so `resume` continues from
   the last commit. Workers write through forks of the session, merged back before each commit.

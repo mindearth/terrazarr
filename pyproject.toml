@@ -47,6 +47,8 @@ geozarr-pyramid = "terrazarr.cli:main"
 [project.optional-dependencies]
 icechunk = [
     "icechunk>=1.1,<2 ; python_full_version < '3.12'",
+    # icechunk 1's to_icechunk passes ZarrStore.open_group arguments that xarray 2026.9 removed
+    "xarray<2026.9 ; python_full_version < '3.12'",
     "icechunk>=2.3 ; python_full_version >= '3.12'",
 ]
 
